@@ -224,7 +224,7 @@ describe('集成配置 store：localStorage 持久化', () => {
 
 // Codex QA Rework P1：前端不得保存 API Key / Token / Secret
 // 验证 saveIntegrationConfigs / loadIntegrationConfigs / updateSingleConfig
-// 均不会让注入的密钥值进入 localStorage 或回流到 UI
+// 均不会让 real-key-123 进入 localStorage 或回流到 UI
 describe('集成配置 store：API Key 安全清理（Codex QA Rework P1）', () => {
   let memoryStorage: MemoryStorage;
 
@@ -235,26 +235,22 @@ describe('集成配置 store：API Key 安全清理（Codex QA Rework P1）', ()
     globalThis.window.localStorage = memoryStorage;
   });
 
-  it('saveIntegrationConfigs 写入时强制清空 apiKey，localStorage 原始 payload 不含注入的密钥', async () => {
+  it('saveIntegrationConfigs 写入时强制清空 apiKey，localStorage 原始 payload 不含 real-key-123', async () => {
     const { saveIntegrationConfigs } = await import('./integrationConfigStore');
     const configs = createDefaultIntegrationConfigs();
     // 模拟 UI 误传了真实密钥（理论上 UI 已不提供输入框，但 store 必须防御）
-    // 密钥值在运行时随机生成，测试代码中不落任何密钥样式的字符串字面量
-    const injectedOcrKey = `fixture-${Math.random().toString(36).slice(2)}`;
-    const injectedVerifyKey = `fixture-${Math.random().toString(36).slice(2)}`;
-    const injectedVoucherKey = `fixture-${Math.random().toString(36).slice(2)}`;
-    configs.ocr.apiKey = injectedOcrKey;
-    configs.verify.apiKey = injectedVerifyKey;
-    configs.voucher.apiKey = injectedVoucherKey;
+    configs.ocr.apiKey = 'real-key-123';
+    configs.verify.apiKey = 'secret-token-xyz';
+    configs.voucher.apiKey = 'AKIA-TEST-KEY';
 
     const ok = saveIntegrationConfigs(configs);
     expect(ok).toBe(true);
 
     // 直接读取 localStorage 原始字符串，验证不含任何密钥
     const rawPayload = memoryStorage.getItem('invoice_evidence_integration_config') ?? '';
-    expect(rawPayload).not.toContain(injectedOcrKey);
-    expect(rawPayload).not.toContain(injectedVerifyKey);
-    expect(rawPayload).not.toContain(injectedVoucherKey);
+    expect(rawPayload).not.toContain('real-key-123');
+    expect(rawPayload).not.toContain('secret-token-xyz');
+    expect(rawPayload).not.toContain('AKIA-TEST-KEY');
     // 反向验证：解析后所有 apiKey 必须为空字符串
     const parsed = JSON.parse(rawPayload) as Record<string, { apiKey: string }>;
     expect(parsed.ocr.apiKey).toBe('');
@@ -263,12 +259,10 @@ describe('集成配置 store：API Key 安全清理（Codex QA Rework P1）', ()
   });
 
   it('loadIntegrationConfigs 读取时强制清空 apiKey，旧 localStorage 脏数据不会回流到 UI', async () => {
-    // 模拟旧版本遗留的脏数据：localStorage 中已存在遗留密钥（运行时随机生成）
-    const staleOcrKey = `fixture-${Math.random().toString(36).slice(2)}`;
-    const staleVerifyKey = `fixture-${Math.random().toString(36).slice(2)}`;
+    // 模拟旧版本遗留的脏数据：localStorage 中已存在 real-key-123
     const dirtyPayload = JSON.stringify({
-      ocr: { ...createDefaultIntegrationConfigs().ocr, apiKey: staleOcrKey },
-      verify: { ...createDefaultIntegrationConfigs().verify, apiKey: staleVerifyKey },
+      ocr: { ...createDefaultIntegrationConfigs().ocr, apiKey: 'real-key-123' },
+      verify: { ...createDefaultIntegrationConfigs().verify, apiKey: 'old-token-456' },
       voucher: { ...createDefaultIntegrationConfigs().voucher, apiKey: '' },
     });
     memoryStorage.setItem('invoice_evidence_integration_config', dirtyPayload);
@@ -283,21 +277,20 @@ describe('集成配置 store：API Key 安全清理（Codex QA Rework P1）', ()
 
   it('updateSingleConfig 即使 patch 中带 apiKey 也不会被持久化', async () => {
     const { updateSingleConfig, loadIntegrationConfigs } = await import('./integrationConfigStore');
-    // 模拟攻击者通过 updateSingleConfig 注入 apiKey（运行时随机生成，不落密钥字面量）
-    const injectedKey = `fixture-${Math.random().toString(36).slice(2)}`;
+    // 模拟攻击者通过 updateSingleConfig 注入 apiKey
     updateSingleConfig('ocr', {
       mode: '正式',
       baseUrl: 'https://api.example.com',
-      apiKey: injectedKey,
+      apiKey: 'real-key-123',
     } as Partial<IntegrationConfig>);
 
     // 验证返回值中 apiKey 为空
     const afterUpdate = loadIntegrationConfigs();
     expect(afterUpdate.ocr.apiKey).toBe('');
 
-    // 验证 localStorage 原始 payload 中不含注入的密钥
+    // 验证 localStorage 原始 payload 中不含 real-key-123
     const rawPayload = memoryStorage.getItem('invoice_evidence_integration_config') ?? '';
-    expect(rawPayload).not.toContain(injectedKey);
+    expect(rawPayload).not.toContain('real-key-123');
   });
 
   it('resetIntegrationConfigs 重置后所有 apiKey 为空', async () => {
