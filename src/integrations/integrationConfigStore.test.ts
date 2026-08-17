@@ -1,0 +1,318 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { IntegrationConfig } from './types';
+import { createDefaultIntegrationConfigs, INTEGRATION_NAMES, buildIntegrationDisplayLabel } from './defaultConfigs';
+import { mockTestConnection } from './mockConnectionTest';
+
+class MemoryStorage {
+  private store = new Map<string, string>();
+  getItem(key: string) {
+    return this.store.has(key) ? this.store.get(key)! : null;
+  }
+  setItem(key: string, value: string) {
+    this.store.set(key, value);
+  }
+  removeItem(key: string) {
+    this.store.delete(key);
+  }
+  clear() {
+    this.store.clear();
+  }
+}
+
+describe('集成配置：默认值', () => {
+  it('createDefaultIntegrationConfigs 包含三个接口', () => {
+    const configs = createDefaultIntegrationConfigs();
+    expect(configs.ocr).toBeDefined();
+    expect(configs.verify).toBeDefined();
+    expect(configs.voucher).toBeDefined();
+  });
+
+  it('默认 OCR 为正式（已接入腾讯云真实识别），验真 / 凭证为模拟', () => {
+    const configs = createDefaultIntegrationConfigs();
+    expect(configs.ocr.mode).toBe('正式');
+    expect(configs.verify.mode).toBe('内置');
+    expect(configs.voucher.mode).toBe('内置');
+  });
+
+  it('默认启用状态为 true', () => {
+    const configs = createDefaultIntegrationConfigs();
+    expect(configs.ocr.enabled).toBe(true);
+    expect(configs.verify.enabled).toBe(true);
+    expect(configs.voucher.enabled).toBe(true);
+  });
+
+  it('默认 lastTestResult 为 null', () => {
+    const configs = createDefaultIntegrationConfigs();
+    expect(configs.ocr.lastTestResult).toBeNull();
+  });
+
+  it('INTEGRATION_NAMES 包含 OCR / 验真 / 凭证接口', () => {
+    expect(INTEGRATION_NAMES.ocr).toContain('OCR');
+    expect(INTEGRATION_NAMES.verify).toContain('验真');
+    expect(INTEGRATION_NAMES.voucher).toContain('凭证');
+  });
+});
+
+describe('集成配置：显示标签', () => {
+  it('内置模式 + 启用 -> 显示 OCR 识别 API：内置', () => {
+    const config: IntegrationConfig = { ...createDefaultIntegrationConfigs().ocr, mode: '内置' };
+    expect(buildIntegrationDisplayLabel(config)).toBe('OCR 识别 API：内置');
+  });
+
+  it('内置模式 + 未启用 -> 显示 OCR 识别 API：内置/配置未启用', () => {
+    const config: IntegrationConfig = { ...createDefaultIntegrationConfigs().ocr, mode: '内置', enabled: false };
+    expect(buildIntegrationDisplayLabel(config)).toBe('OCR 识别 API：内置/配置未启用');
+  });
+
+  it('正式模式 + 启用 -> 显示 OCR 识别 API：正式（OCR 默认即正式）', () => {
+    const config: IntegrationConfig = createDefaultIntegrationConfigs().ocr;
+    expect(config.mode).toBe('正式');
+    expect(buildIntegrationDisplayLabel(config)).toBe('OCR 识别 API：正式');
+  });
+
+  it('正式模式 + 未启用 -> 显示 OCR 识别 API：正式/配置未启用', () => {
+    const config: IntegrationConfig = {
+      ...createDefaultIntegrationConfigs().ocr,
+      mode: '正式',
+      enabled: false,
+    };
+    expect(buildIntegrationDisplayLabel(config)).toBe('OCR 识别 API：正式/配置未启用');
+  });
+});
+
+describe('集成配置：模拟连接测试', () => {
+  it('模拟模式测试 -> success=true 且 simulated=true', () => {
+    const config: IntegrationConfig = { ...createDefaultIntegrationConfigs().ocr, mode: '内置' };
+    const result = mockTestConnection({ config });
+    expect(result.success).toBe(true);
+    expect(result.simulated).toBe(true);
+    expect(result.mode).toBe('内置');
+  });
+
+  it('模拟模式即使 Base URL 为空也能通过（不发送真实请求）', () => {
+    const config: IntegrationConfig = {
+      ...createDefaultIntegrationConfigs().ocr,
+      mode: '内置',
+      baseUrl: '',
+      apiKey: '',
+    };
+    const result = mockTestConnection({ config });
+    expect(result.success).toBe(true);
+    expect(result.simulated).toBe(true);
+  });
+
+  it('正式模式测试 -> success=false 且 simulated=true，绝不调用真实接口', () => {
+    const config: IntegrationConfig = {
+      ...createDefaultIntegrationConfigs().ocr,
+      mode: '正式',
+      baseUrl: 'https://real-api.example.com',
+      // 不再使用 real-key-123：前端不保存任何密钥
+      apiKey: '',
+    };
+    const result = mockTestConnection({ config });
+    // 正式模式：success=false（提示仅保存配置），但 simulated=true（未发真实请求）
+    expect(result.success).toBe(false);
+    expect(result.simulated).toBe(true);
+    expect(result.message).toContain('不调用真实接口');
+  });
+
+  it('测试结果包含时间戳和耗时', () => {
+    const config = createDefaultIntegrationConfigs().verify;
+    const result = mockTestConnection({ config });
+    expect(result.timestamp).toBeTruthy();
+    expect(result.durationMs).toBeGreaterThanOrEqual(0);
+  });
+});
+
+describe('集成配置 store：localStorage 持久化', () => {
+  let memoryStorage: MemoryStorage;
+
+  beforeEach(() => {
+    memoryStorage = new MemoryStorage();
+    globalThis.window = globalThis.window || {};
+    // @ts-expect-error 注入测试用 localStorage（MemoryStorage 不完全匹配 Storage 类型）
+    globalThis.window.localStorage = memoryStorage;
+  });
+
+  it('loadIntegrationConfigs 默认：OCR 正式（真实接入），验真 / 凭证模拟', async () => {
+    const { loadIntegrationConfigs } = await import('./integrationConfigStore');
+    const configs = loadIntegrationConfigs();
+    expect(configs.ocr.mode).toBe('正式');
+    expect(configs.verify.mode).toBe('内置');
+    expect(configs.voucher.mode).toBe('内置');
+  });
+
+  it('localStorage 中遗留的 OCR 模拟状态会被强制升级为正式（OCR 已真实接入）', async () => {
+    const stalePayload = JSON.stringify({
+      ocr: { ...createDefaultIntegrationConfigs().ocr, mode: '内置' },
+      verify: createDefaultIntegrationConfigs().verify,
+      voucher: createDefaultIntegrationConfigs().voucher,
+    });
+    memoryStorage.setItem('invoice_evidence_integration_config', stalePayload);
+
+    const { loadIntegrationConfigs } = await import('./integrationConfigStore');
+    const configs = loadIntegrationConfigs();
+    expect(configs.ocr.mode).toBe('正式');
+    // 验真 / 凭证不受影响
+    expect(configs.verify.mode).toBe('内置');
+    expect(configs.voucher.mode).toBe('内置');
+  });
+
+  it('saveIntegrationConfigs 写入 localStorage', async () => {
+    const { saveIntegrationConfigs, loadIntegrationConfigs } = await import('./integrationConfigStore');
+    const configs = createDefaultIntegrationConfigs();
+    configs.ocr.mode = '正式';
+    configs.ocr.baseUrl = 'https://api.example.com';
+    saveIntegrationConfigs(configs);
+    const loaded = loadIntegrationConfigs();
+    expect(loaded.ocr.mode).toBe('正式');
+    expect(loaded.ocr.baseUrl).toBe('https://api.example.com');
+  });
+
+  it('刷新后配置可恢复', async () => {
+    const { saveIntegrationConfigs } = await import('./integrationConfigStore');
+    const configs = createDefaultIntegrationConfigs();
+    configs.verify.mode = '正式';
+    configs.verify.baseUrl = 'https://verify.example.com';
+    saveIntegrationConfigs(configs);
+    // 重新 import 模拟刷新
+    vi.resetModules();
+    const fresh = await import('./integrationConfigStore');
+    const loaded = fresh.loadIntegrationConfigs();
+    expect(loaded.verify.mode).toBe('正式');
+    expect(loaded.verify.baseUrl).toBe('https://verify.example.com');
+  });
+
+  it('updateSingleConfig 仅更新单个接口', async () => {
+    const { updateSingleConfig, loadIntegrationConfigs } = await import('./integrationConfigStore');
+    updateSingleConfig('ocr', { mode: '正式', baseUrl: 'https://ocr.example.com' });
+    const configs = loadIntegrationConfigs();
+    expect(configs.ocr.mode).toBe('正式');
+    expect(configs.ocr.baseUrl).toBe('https://ocr.example.com');
+    // 其他接口保持默认
+    expect(configs.verify.mode).toBe('内置');
+    expect(configs.voucher.mode).toBe('内置');
+  });
+
+  it('testConnection 写入测试结果并返回模拟值', async () => {
+    const { testConnection, loadIntegrationConfigs } = await import('./integrationConfigStore');
+    const { result } = testConnection('ocr');
+    expect(result).not.toBeNull();
+    expect(result!.simulated).toBe(true);
+    const configs = loadIntegrationConfigs();
+    expect(configs.ocr.lastTestResult).not.toBeNull();
+    expect(configs.ocr.lastTestResult!.simulated).toBe(true);
+  });
+
+  it('resetIntegrationConfigs 恢复默认：OCR 正式，验真 / 凭证回到模拟', async () => {
+    const { updateSingleConfig, resetIntegrationConfigs, loadIntegrationConfigs } = await import('./integrationConfigStore');
+    updateSingleConfig('verify', { mode: '正式' });
+    expect(loadIntegrationConfigs().verify.mode).toBe('正式');
+    resetIntegrationConfigs();
+    expect(loadIntegrationConfigs().ocr.mode).toBe('正式');
+    expect(loadIntegrationConfigs().verify.mode).toBe('内置');
+    expect(loadIntegrationConfigs().voucher.mode).toBe('内置');
+  });
+
+  it('getIntegrationModeSummaries 返回三个摘要', async () => {
+    const { getIntegrationModeSummaries } = await import('./integrationConfigStore');
+    const summaries = getIntegrationModeSummaries();
+    expect(summaries.length).toBe(3);
+    expect(summaries.map((s) => s.key).sort()).toEqual(['ocr', 'verify', 'voucher']);
+  });
+});
+
+// Codex QA Rework P1：前端不得保存 API Key / Token / Secret
+// 验证 saveIntegrationConfigs / loadIntegrationConfigs / updateSingleConfig
+// 均不会让注入的密钥值进入 localStorage 或回流到 UI
+describe('集成配置 store：API Key 安全清理（Codex QA Rework P1）', () => {
+  let memoryStorage: MemoryStorage;
+
+  beforeEach(() => {
+    memoryStorage = new MemoryStorage();
+    globalThis.window = globalThis.window || {};
+    // @ts-expect-error 注入测试用 localStorage（MemoryStorage 不完全匹配 Storage 类型）
+    globalThis.window.localStorage = memoryStorage;
+  });
+
+  it('saveIntegrationConfigs 写入时强制清空 apiKey，localStorage 原始 payload 不含注入的密钥', async () => {
+    const { saveIntegrationConfigs } = await import('./integrationConfigStore');
+    const configs = createDefaultIntegrationConfigs();
+    // 模拟 UI 误传了真实密钥（理论上 UI 已不提供输入框，但 store 必须防御）
+    // 密钥值在运行时随机生成，测试代码中不落任何密钥样式的字符串字面量
+    const injectedOcrKey = `fixture-${Math.random().toString(36).slice(2)}`;
+    const injectedVerifyKey = `fixture-${Math.random().toString(36).slice(2)}`;
+    const injectedVoucherKey = `fixture-${Math.random().toString(36).slice(2)}`;
+    configs.ocr.apiKey = injectedOcrKey;
+    configs.verify.apiKey = injectedVerifyKey;
+    configs.voucher.apiKey = injectedVoucherKey;
+
+    const ok = saveIntegrationConfigs(configs);
+    expect(ok).toBe(true);
+
+    // 直接读取 localStorage 原始字符串，验证不含任何密钥
+    const rawPayload = memoryStorage.getItem('invoice_evidence_integration_config') ?? '';
+    expect(rawPayload).not.toContain(injectedOcrKey);
+    expect(rawPayload).not.toContain(injectedVerifyKey);
+    expect(rawPayload).not.toContain(injectedVoucherKey);
+    // 反向验证：解析后所有 apiKey 必须为空字符串
+    const parsed = JSON.parse(rawPayload) as Record<string, { apiKey: string }>;
+    expect(parsed.ocr.apiKey).toBe('');
+    expect(parsed.verify.apiKey).toBe('');
+    expect(parsed.voucher.apiKey).toBe('');
+  });
+
+  it('loadIntegrationConfigs 读取时强制清空 apiKey，旧 localStorage 脏数据不会回流到 UI', async () => {
+    // 模拟旧版本遗留的脏数据：localStorage 中已存在遗留密钥（运行时随机生成）
+    const staleOcrKey = `fixture-${Math.random().toString(36).slice(2)}`;
+    const staleVerifyKey = `fixture-${Math.random().toString(36).slice(2)}`;
+    const dirtyPayload = JSON.stringify({
+      ocr: { ...createDefaultIntegrationConfigs().ocr, apiKey: staleOcrKey },
+      verify: { ...createDefaultIntegrationConfigs().verify, apiKey: staleVerifyKey },
+      voucher: { ...createDefaultIntegrationConfigs().voucher, apiKey: '' },
+    });
+    memoryStorage.setItem('invoice_evidence_integration_config', dirtyPayload);
+
+    const { loadIntegrationConfigs } = await import('./integrationConfigStore');
+    const loaded = loadIntegrationConfigs();
+    // 读取后所有 apiKey 必须为空字符串，旧脏数据不会回流
+    expect(loaded.ocr.apiKey).toBe('');
+    expect(loaded.verify.apiKey).toBe('');
+    expect(loaded.voucher.apiKey).toBe('');
+  });
+
+  it('updateSingleConfig 即使 patch 中带 apiKey 也不会被持久化', async () => {
+    const { updateSingleConfig, loadIntegrationConfigs } = await import('./integrationConfigStore');
+    // 模拟攻击者通过 updateSingleConfig 注入 apiKey（运行时随机生成，不落密钥字面量）
+    const injectedKey = `fixture-${Math.random().toString(36).slice(2)}`;
+    updateSingleConfig('ocr', {
+      mode: '正式',
+      baseUrl: 'https://api.example.com',
+      apiKey: injectedKey,
+    } as Partial<IntegrationConfig>);
+
+    // 验证返回值中 apiKey 为空
+    const afterUpdate = loadIntegrationConfigs();
+    expect(afterUpdate.ocr.apiKey).toBe('');
+
+    // 验证 localStorage 原始 payload 中不含注入的密钥
+    const rawPayload = memoryStorage.getItem('invoice_evidence_integration_config') ?? '';
+    expect(rawPayload).not.toContain(injectedKey);
+  });
+
+  it('resetIntegrationConfigs 重置后所有 apiKey 为空', async () => {
+    const { resetIntegrationConfigs } = await import('./integrationConfigStore');
+    const defaults = resetIntegrationConfigs();
+    expect(defaults.ocr.apiKey).toBe('');
+    expect(defaults.verify.apiKey).toBe('');
+    expect(defaults.voucher.apiKey).toBe('');
+  });
+
+  it('testConnection 返回的 configs 中 apiKey 始终为空', async () => {
+    const { testConnection } = await import('./integrationConfigStore');
+    const { configs } = testConnection('ocr');
+    expect(configs.ocr.apiKey).toBe('');
+    expect(configs.verify.apiKey).toBe('');
+    expect(configs.voucher.apiKey).toBe('');
+  });
+});

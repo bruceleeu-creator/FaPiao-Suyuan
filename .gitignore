@@ -1,0 +1,34 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+coverage/
+playwright-report/
+test-results/
+
+# TypeScript incremental build artifacts
+.tsbuild/
+*.tsbuildinfo
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# System files
+.DS_Store
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Local encrypted Tencent credentials (never commit)
+server/.tencent-credential-key
+server/.tencent-credentials.enc
+
+# Mimosa local scan state (never commit)
+.mimosa/

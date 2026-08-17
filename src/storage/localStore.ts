@@ -1,0 +1,64 @@
+// localStorage 基础工具：统一序列化、读取、写入、删除
+// 设计原则：单一职责，所有 localStorage 调用必须经过本模块，便于后续替换为 IndexedDB 或后端 API。
+// 注意：isBrowser 在每次调用时动态判断，避免模块加载时机导致测试 mock 失效。
+
+function getStorage(): Storage | null {
+  if (typeof window === 'undefined') return null;
+  if (typeof window.localStorage === 'undefined') return null;
+  return window.localStorage;
+}
+
+export function readJSON<T>(key: string, fallback: T): T {
+  const storage = getStorage();
+  if (!storage) return fallback;
+  try {
+    const raw = storage.getItem(key);
+    if (raw === null) return fallback;
+    return JSON.parse(raw) as T;
+  } catch (err) {
+    // 解析失败不抛出，返回 fallback，避免单条坏数据阻塞整个流程
+    console.warn(`[localStore] 读取 ${key} 失败，使用默认值：`, err);
+    return fallback;
+  }
+}
+
+export function writeJSON<T>(key: string, value: T): boolean {
+  const storage = getStorage();
+  if (!storage) return false;
+  try {
+    storage.setItem(key, JSON.stringify(value));
+    return true;
+  } catch (err) {
+    // 容量满或隐私模式可能抛出 QuotaExceededError
+    console.error(`[localStore] 写入 ${key} 失败：`, err);
+    return false;
+  }
+}
+
+export function removeKey(key: string): void {
+  const storage = getStorage();
+  if (!storage) return;
+  try {
+    storage.removeItem(key);
+  } catch (err) {
+    console.warn(`[localStore] 删除 ${key} 失败：`, err);
+  }
+}
+
+export function hasKey(key: string): boolean {
+  const storage = getStorage();
+  if (!storage) return false;
+  try {
+    return storage.getItem(key) !== null;
+  } catch {
+    return false;
+  }
+}
+
+// 统一 key 前缀，避免与其他应用冲突
+export const STORAGE_KEYS = {
+  cases: 'invoice_evidence_cases',
+  activeCaseId: 'invoice_evidence_active_case_id',
+  integrationConfig: 'invoice_evidence_integration_config',
+  ruleThresholds: 'invoice_evidence_rule_thresholds',
+} as const;
