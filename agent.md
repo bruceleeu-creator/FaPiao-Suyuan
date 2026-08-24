@@ -1,29 +1,31 @@
 # Agent 当前任务记忆（开发完成态）
 
-> 更新日期：2026-08-17 —— 一期功能开发完毕，前后端已关闭，源码已打包。
+> 更新日期：2026-08-24 —— 账户系统上线 + 公网部署完成（腾讯云 49.232.160.7:8083），源码已推 GitHub。
 
 ## 0. 项目总览
 
 - **项目**：发票溯源证据链系统（一期电脑端 Web MVP）
 - **定位**：以发票为入口、以业务事件为核心、以证据链为基础、以财税风险决策为结果的智能入账系统。
-- **形态**：React 18 + TypeScript + Vite 5 + Node 原生后端代理（零第三方依赖）+ localStorage 持久化。
-- **规模**：src + server + scripts 约 2.3 万行；28 个测试文件 / 357 个用例；11 个页面。
-- **当前状态**：三阶段闭环（票面确认 → 业务追问 → 证据补充 → AI 风险初判 → 人工复核 → 生成建议）全部走通；UI 卡片化改造完成；验证（test + build + backend:smoke）全部通过。
+- **形态**：React 18 + TypeScript + Vite 5 + Node 原生后端代理（零第三方依赖）+ localStorage 持久化（按账户命名空间隔离）。
+- **线上地址**：`http://49.232.160.7:8083/`（账户系统：注册/登录后使用；8083 需腾讯云控制台防火墙放行）
+- **规模**：src + server + scripts 约 2.4 万行；29 个测试文件 / 368 个用例；12 个页面（含登录页）。
+- **当前状态**：三阶段闭环全部走通；账户系统（scrypt 密码 + HMAC 令牌）上线；公网部署验证通过；验证（test + build + backend:smoke 59 项）全部通过。
 
 ## 1. 启动与验证
 
 ```bash
 npm run dev           # 一键：后端 8787（健康检查就绪后）+ 前端 Vite（5173，被占自动换端口）
-npm test              # 357 个用例
+npm test              # 368 个用例
 npm run build         # tsc -b + vite build
-npm run backend:smoke # 后端冒烟 37 项断言
+npm run backend:smoke # 后端冒烟 59 项断言（含账户与鉴权段）
 npm run validate      # 一键全验证
 ```
 
 - 启动器 `scripts/dev.mjs`：后端就绪轮询、崩溃自动重启（10 次）、端口复用、信号清理、不留孤儿进程。
 - 优雅降级：后端不可达时 OCR 回退模拟识别、DeepSeek 回退本地规则，演示流程不中断。
+- **账户系统**：`npm run dev` 后打开 5173 会先跳登录页，需注册账户（用户名 2-24 位中英文/数字/下划线/连字符，密码 6-64 位）；未登录无法进入任何页面。
 - 密钥配置：`cp .env.example .env`，填 `TENCENT_CLOUD_SECRET_ID/KEY`、`DEEPSEEK_API_KEY/MODEL`（缺省即模拟模式）。
-- 数据清理：浏览器控制台 `localStorage.clear()`（键前缀 `invoice_evidence_`，如 `invoice_evidence_cases`）。
+- 数据清理：浏览器控制台 `localStorage.clear()`（登录态键 `invoice_evidence_auth`；业务数据键按账户命名空间 `invoice_evidence_u{用户ID}__*`）。
 
 ## 2. 已完成功能清单（Gate 验收全通过）
 
@@ -42,6 +44,8 @@ npm run validate      # 一键全验证
 | 证据模板 Word 化 | AI 生成真实 .docx（evidenceTemplateDocx.ts，fflate 零依赖） |
 | 证据补充任务卡片 | 卡片网格 + 单行截断 + hover 放大 + 详情弹层（见 §3.1） |
 | 风险驾驶舱卡片化 | 宽扁长条卡片全量统一（见 §3.2） |
+| 账户系统（2026-08-24） | 注册/登录/登出、scrypt 密码哈希、HMAC 令牌 7 天、数据按账户命名空间隔离（见 §4.5） |
+| 公网部署（2026-08-24） | 腾讯云 49.232.160.7:8083 上线，密钥接口令牌鉴权（见 §4.6） |
 
 ## 3. 本次 UI 卡片化改造（2026-08-17 最后交付）
 
@@ -91,8 +95,28 @@ npm run validate      # 一键全验证
 
 - 仅本地真实 case 进统计（演示样例 demoCases 只在浏览模式展示）。
 - 比率指标（采纳率/修改率/通过率/误报率）基于操作日志与 AI 介入记录真实计算，分母为 0 显示「暂无数据」。
-- localStorage 统一走 `src/storage/localStore.ts`（key 前缀 `invoice_evidence_`），便于替换 IndexedDB/后端 API。
+- localStorage 统一走 `src/storage/localStore.ts`，读写删查统一经 `applyAccountNamespace` 变换：登录后 key 变为 `invoice_evidence_u{用户ID}__*`，未登录保持旧 key（兼容 vitest node 环境与旧数据）。
 - 会话创建时初始 businessQA 在 CONFIRM_INVOICE 以本地模板占位，业务追问步骤再被 DeepSeek 替换（两段式，测试需注意）。
+
+### 4.5 账户系统（2026-08-24 新增）
+
+- 后端 `server/authStore.mjs`：零依赖（node:fs/crypto），用户存 `server/data/users.json`（原子写入），密码 scrypt+随机盐+timingSafeEqual，登录失败统一 401 防枚举，令牌 HMAC-SHA256 无状态签名（密钥 `server/data/auth.secret` 自动生成，服务重启不掉线），`AUTH_DATA_DIR` 环境变量可覆盖数据目录。
+- 接口：`POST /api/auth/register`（注册即登录，201）/ `login` / `me`（刷新恢复会话）。
+- 前端 `src/auth/`：`authStorage.ts`（登录态持久化 + key 命名空间纯函数）、`AuthContext.tsx`（会话恢复/登录/注册/登出）、`ui/pages/LoginPage.tsx`（登录注册双 tab）。
+- 路由守卫：`App.tsx` 的 AuthGate——未登录重定向 /login；登录后 `<AuthenticatedApp key={userId}>` 整树重建，切换账户零残留。
+- 登录态自举 key `invoice_evidence_auth` 绝不参与命名空间变换（否则死循环）。
+- 侧边栏底部显示当前账户 + 退出登录（Layout.tsx）。
+
+### 4.6 公网部署（2026-08-24 上线）
+
+- **线上地址：`http://49.232.160.7:8083/`**（IP 直连，无域名无 HTTPS；8083 需腾讯云控制台防火墙放行）
+- 拓扑：nginx:8083（宝塔，静态 dist + `/api/` 反代，client_max_body_size 25m / proxy_read_timeout 120s）→ Node 后端 127.0.0.1:8787（pm2 `invoice-evidence-server`，入口 **`server/start.mjs`**，不对外）。
+- **pm2 坑**：pm2 fork 下 process.argv[1] 是 ProcessContainerFork 包装脚本，tencentProxyServer.mjs 的 import.meta 直接运行检测不命中 → 静默不启动；生产必须用 start.mjs。
+- **安全**：OCR/验真/DeepSeek 五个密钥消耗接口需 `Authorization: Bearer <token>`（requireApiToken），未登录 401；前端 4 个调用点经 `authHeaders()` 自动带令牌；CORS 白名单支持 `EXTRA_ALLOWED_ORIGIN` 环境变量。
+- 服务器路径：后端 `/www/wwwroot/invoice-evidence/server`，前端 `/www/wwwroot/invoice-evidence-web`，vhost `/www/server/panel/vhost/nginx/invoice-evidence-web.conf`。
+- 备份：每日 3 点 crontab 备份 `server/data` 到 `/www/backup`（留 7 份）。
+- 更新发布：本地 `npm run build` → `rsync -a dist/ root@49.232.160.7:/www/wwwroot/invoice-evidence-web/`；后端改动 `scp server/*.mjs` 后 `pm2 restart invoice-evidence-server`。
+- 上线密钥（可选）：服务器 `server/.env` 填 `TENCENT_CLOUD_SECRET_ID/KEY`、`DEEPSEEK_API_KEY` 后 `pm2 restart`，启用真实 OCR/DeepSeek（缺失自动模拟模式）。
 
 ## 5. 涉及文件索引
 
@@ -100,18 +124,22 @@ npm run validate      # 一键全验证
 - **驾驶舱**：`src/ui/pages/RiskDashboardPage.tsx`、`src/ui/riskKpis.ts`、`src/ui/riskDimensions.ts`、`src/ui/riskDrilldown.ts`、`src/ui/riskTrend.ts`
 - **异常**：`src/ui/pages/ExceptionsPage.tsx`、`src/ui/exceptionBoard.ts`
 - **状态机**：`src/workflow/workflowReducer.ts`、`statusMachine.ts`、`WorkflowContext.tsx`
-- **AI 层**：`src/ai/deepSeekQuestionService.ts`、`deepSeekInterpreter.ts`、`deepSeekInterpreter.ts`、`mockQuestionService.ts`、`mockEvidenceMatcher.ts`、`mockRiskAdvisor.ts`、`evidenceTemplateDocx.ts`、`categoryRules.ts`
-- **规则/集成**：`src/rules/thresholdStore.ts`、`src/integrations/*`、`src/integrations/tencentCloudInvoiceOcr.ts`、`tencentCloudInvoiceVerify.ts`
-- **样式**：`src/styles.css`（视觉系统 v2，含证据任务卡片与驾驶舱宽扁卡片区块）
-- **后端**：`server/tencentProxyServer.mjs`、`deepseekClient.mjs`、`deepseekConfig.mjs`、`tencentOcrClient.mjs`、`tencentCredentialStore.mjs`、`tencentProxyResponses.mjs`、`tencentProxyConfig.mjs`
-- **启动**：`scripts/dev.mjs`、`package.json`、`vite.config.ts`、`.env.example`
+- **账户**：`server/authStore.mjs`、`server/start.mjs`（pm2 入口）、`src/auth/authStorage.ts`、`src/auth/AuthContext.tsx`、`src/ui/pages/LoginPage.tsx`
+- **AI 层**：`src/ai/deepSeekQuestionService.ts`、`deepSeekInterpreter.ts`、`mockQuestionService.ts`、`mockEvidenceMatcher.ts`、`mockRiskAdvisor.ts`、`evidenceTemplateDocx.ts`、`categoryRules.ts`
+- **规则/集成**：`src/rules/thresholdStore.ts`、`src/integrations/*`
+- **样式**：`src/styles.css`（视觉系统 v2，含证据任务卡片、驾驶舱宽扁卡片、登录页 auth-* 区块）
+- **后端**：`server/tencentProxyServer.mjs`（含 /api/auth/* 路由与 requireApiToken 鉴权）、`authStore.mjs`、`deepseekClient.mjs`、`deepseekConfig.mjs`、`tencentOcrClient.mjs`、`tencentCredentialStore.mjs`、`tencentProxyResponses.mjs`、`tencentProxyConfig.mjs`
+- **启动**：`scripts/dev.mjs`、`scripts/backend-smoke.mjs`（含账户段）、`package.json`、`vite.config.ts`（含 /api/auth 代理）、`.env.example`
 
 ## 6. 遗留事项与注意事项
 
+- **8083 防火墙**：需用户在腾讯云控制台放行（TCP/8083/0.0.0.0/0），放行前外网不可达（服务器本机已验证全通）。
+- **HTTP 明文**：IP 直连无 HTTPS（无域名办不了证书）；上域名需改 nginx 三处 + 证书，架构已预留。
 - 验真、查重、凭证接口仍为模拟/预留（产品边界内，一期不替换）。
+- 线上密钥未配置：服务器 server/.env 为空，OCR/DeepSeek 走模拟模式；配好密钥重启后端即启用真实调用。
+- 业务数据在用户浏览器（按账户命名空间），服务器只存账户库；跨设备同步属后续升级。
 - 工作流操作日志第一条仍叫「开始识别」（内部标签，测试锁定）；改名需同步 `workflowReducer` + 2 个测试文件。
-- 浏览器 localStorage 可能残留演示记录（测试发票 10012999 / 30033003 等），演示前建议 `localStorage.clear()`。
-- 打包分发：源码 zip（排除 node_modules/dist/.tsbuild/.git），解压后 `npm install && npm run dev`；密钥需重新配置。
+- 打包分发：源码 zip（排除 node_modules/dist/.tsbuild/.git/server/data），解压后 `npm install && npm run dev`；密钥需重新配置。
 - 手机端一期只保留入口占位（/mobile），不做完整手机端。
 - 若需继续开发：改后端代码后重启 `npm run dev`；新任务应先更新 `progress.md` 再创建 CO/TR 文档。
 

@@ -73,10 +73,15 @@ export function checkTencentCloudConfigured() {
 }
 
 // 解析 CORS 允许的源
+// 白名单 = 本地开发源 + 环境变量 EXTRA_ALLOWED_ORIGIN（逗号分隔，部署时配置生产源）
 // 如果请求 Origin 在白名单中，则返回该 Origin；否则返回空字符串（不允许跨域）
 export function resolveCorsOrigin(requestOrigin) {
   if (!requestOrigin) return '';
-  if (ALLOWED_DEV_ORIGINS.includes(requestOrigin)) {
+  const extra = (process.env.EXTRA_ALLOWED_ORIGIN || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (ALLOWED_DEV_ORIGINS.includes(requestOrigin) || extra.includes(requestOrigin)) {
     return requestOrigin;
   }
   return '';

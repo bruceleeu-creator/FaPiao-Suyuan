@@ -4857,3 +4857,174 @@ dd {
   gap: 2px;
   font-size: var(--fs-12);
 }
+
+/* ============================================
+   账户系统：登录页与侧栏账户区
+   ============================================ */
+
+/* 登录页整屏布局（居中卡片） */
+.auth-screen {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  background:
+    radial-gradient(1200px 600px at 20% -10%, rgba(31, 106, 80, 0.12), transparent 60%),
+    radial-gradient(900px 500px at 110% 110%, rgba(31, 106, 80, 0.08), transparent 55%),
+    var(--c-bg);
+  padding: var(--space-6);
+}
+
+.auth-loading {
+  color: var(--c-muted);
+  font-size: var(--fs-14);
+  letter-spacing: 0.02em;
+}
+
+.auth-card {
+  width: min(420px, 100%);
+  background: var(--c-paper);
+  border: 1px solid var(--c-line);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 18px 48px rgba(23, 33, 31, 0.14);
+  padding: var(--space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.auth-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.auth-brand strong {
+  display: block;
+  font-size: var(--fs-16);
+  color: var(--c-ink);
+}
+
+.auth-brand small {
+  display: block;
+  color: var(--c-muted);
+  font-size: var(--fs-12);
+  margin-top: 2px;
+}
+
+/* 登录/注册切换 tab */
+.auth-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-2);
+  padding: 3px;
+  background: var(--c-paper-2);
+  border: 1px solid var(--c-line-2);
+  border-radius: var(--radius-md);
+}
+
+.auth-tab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border: none;
+  border-radius: calc(var(--radius-md) - 2px);
+  background: transparent;
+  color: var(--c-muted);
+  font-size: var(--fs-13);
+  font-weight: var(--fw-medium);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.auth-tab:hover {
+  color: var(--c-ink);
+}
+
+.auth-tab.active {
+  background: var(--c-paper);
+  color: var(--c-accent);
+  box-shadow: 0 1px 4px rgba(23, 33, 31, 0.12);
+}
+
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.auth-error {
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(192, 62, 47, 0.35);
+  background: rgba(224, 87, 72, 0.08);
+  color: #b03a2a;
+  font-size: var(--fs-13);
+  line-height: 1.5;
+}
+
+.auth-submit {
+  width: 100%;
+  justify-content: center;
+  margin-top: var(--space-1);
+}
+
+.auth-footnote {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  color: var(--c-muted-2);
+  font-size: var(--fs-12);
+  line-height: 1.6;
+}
+
+.auth-footnote svg {
+  flex-shrink: 0;
+  margin-top: 3px;
+}
+
+/* 侧栏底部：当前账户 + 退出登录 */
+.sidebar-user {
+  margin-top: auto;
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--c-shell-line);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.sidebar-user-id {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--c-shell-text);
+  font-size: var(--fs-13);
+  min-width: 0;
+}
+
+.sidebar-user-id span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-logout {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  border: 1px solid var(--c-shell-line);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--c-shell-text-2);
+  font-size: var(--fs-12);
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+
+.sidebar-logout:hover {
+  color: #ffb4a8;
+  border-color: rgba(255, 180, 168, 0.4);
+  background: rgba(224, 87, 72, 0.12);
+}

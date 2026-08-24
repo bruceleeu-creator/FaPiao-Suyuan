@@ -52,11 +52,12 @@ npm run validate
 
 ```bash
 # 只保存 SecretId（当前项目已保存，缺少 SecretKey 时不会启用真实调用）
-TENCENT_CLOUD_SECRET_ID="<你的SecretId>" npm run credential:store
+# 把 <你的SecretId> 替换为以 AKID 开头的真实值后再执行，切勿提交到任何仓库
+TENCENT_CLOUD_SECRET_ID=<你的SecretId> npm run credential:store
 
 # 同时保存 SecretId 和 SecretKey 后才会被识别为“已配置”
-TENCENT_CLOUD_SECRET_ID="<你的SecretId>" \
-TENCENT_CLOUD_SECRET_KEY="<你的SecretKey>" \
+TENCENT_CLOUD_SECRET_ID=<你的SecretId> \
+TENCENT_CLOUD_SECRET_KEY=<你的SecretKey> \
 npm run credential:store
 
 # 查看当前凭据状态（只显示脱敏信息）

@@ -29,3 +29,6 @@ yarn-error.log*
 # Local encrypted Tencent credentials (never commit)
 server/.tencent-credential-key
 server/.tencent-credentials.enc
+
+# Account database (users.json / auth.secret, never commit)
+server/data/

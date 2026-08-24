@@ -2,6 +2,8 @@
 
 > 以发票为入口、以业务事件为核心、以证据链为基础、以财税风险决策为结果的智能入账系统。
 
+**🌐 线上地址：http://49.232.160.7:8083/**（需注册账户登录使用；每个账户的发票与凭证数据相互隔离）
+
 本系统不是单纯 OCR 发票识别工具，而是围绕「事实 → 证据 → 规则 → 风险 → 凭证草稿」构建的一期电脑端 Web MVP：
 从发票识别、业务追问还原、证据补充匹配，到 AI 风险初判、人工复核、凭证草稿生成，形成完整的三阶段业务闭环。
 
@@ -60,6 +62,14 @@ npm run dev           # 终端 2：前端 Vite
 - **OCR HTTP 500 根治**：`npm run dev` 先启动后端并轮询 `/health` 就绪后再启动 Vite，消除启动竞态。
 - **优雅降级**：即使后端未启动，前端 OCR 自动回退模拟识别、DeepSeek 自动回退本地规则模板，演示流程不会被阻断；后端恢复后上传文件自动切回真实识别。
 - 页面顶部 OCR 状态条实时显示后端连通状态：已连接 / 未启动（模拟模式）/ 探测中。
+
+### 2.4 账户系统（必经入口）
+
+- 首次使用需在登录页「注册新账户」：用户名 2-24 位（中文/字母/数字/下划线/连字符），密码 6-64 位；注册成功自动登录。
+- 未登录访问任何页面都会被重定向到 `/login`；侧边栏底部显示当前账户并提供「退出登录」。
+- **数据按账户隔离**：每个账户的发票案例、规则阈值、接口配置存放在独立的 localStorage 命名空间（`invoice_evidence_u{用户ID}__*`），不同账户在同一浏览器中互不可见；演示样例仍为全局只读。
+- 密码使用 scrypt + 随机盐加密存储于 `server/data/users.json`（不存明文）；登录令牌为 HMAC-SHA256 无状态签名，有效期 7 天，后端重启不掉线。
+- 账户接口：`POST /api/auth/register`（注册即登录）、`POST /api/auth/login`、`POST /api/auth/me`（刷新页面后校验令牌恢复会话）。账户数据存放位置可用环境变量 `AUTH_DATA_DIR` 覆盖。
 
 ## 3. 功能模块（页面导航）
 
@@ -139,7 +149,8 @@ src/
 
 ```
 server/
-├── tencentProxyServer.mjs      # Node 原生 HTTP 服务器主入口（健康检查/OCR/DeepSeek 路由）
+├── tencentProxyServer.mjs      # Node 原生 HTTP 服务器主入口（健康检查/账户认证/OCR/DeepSeek 路由）
+├── authStore.mjs               # 账户系统：用户存储（scrypt 哈希）+ HMAC 令牌签发与校验
 ├── deepseekClient.mjs          # DeepSeek 三方法：interpret / questions / risk
 ├── deepseekConfig.mjs          # .env 加载（KEY=VALUE 简易解析，缺失才注入）
 ├── tencentOcrClient.mjs        # 腾讯云真实 OCR（TC3 签名 + VatInvoiceOCR）
@@ -148,7 +159,7 @@ server/
 └── tencentProxyResponses.mjs   # 预留响应构造与 traceId
 ```
 
-接口一览：`GET /health`、`GET /api/tencent/health`（代理健康检查别名）、`POST /api/tencent/ocr/invoice`、`POST /api/deepseek/interpret|questions|risk`。Vite 已配置 `/api/tencent`、`/api/deepseek` 代理到 8787。
+接口一览：`GET /health`、`GET /api/tencent/health`（代理健康检查别名）、`POST /api/auth/register|login|me`（账户）、`POST /api/tencent/ocr/invoice`、`POST /api/deepseek/interpret|questions|risk`。Vite 已配置 `/api/auth`、`/api/tencent`、`/api/deepseek` 代理到 8787。
 
 ### 6.3 数据流
 
@@ -184,14 +195,24 @@ npm run validate          # 一键：test + build + backend:smoke
 ## 8. 打包分发
 
 ```bash
-# 排除依赖与构建产物、版本库，生成源码压缩包
+# 排除依赖与构建产物、版本库、账户数据，生成源码压缩包
 zip -r 发票溯源证据链系统.zip . \
-  -x "node_modules/*" "dist/*" ".tsbuild/*" ".git/*" ".DS_Store" "*.log" ".zcode/*"
+  -x "node_modules/*" "dist/*" ".tsbuild/*" ".git/*" ".DS_Store" "*.log" ".zcode/*" "server/data/*"
 ```
 
 解压后 `npm install && npm run dev` 即可运行（密钥需按第 2.1 节重新配置）。
 
-## 9. 产品边界与一期范围
+## 9. 公网部署（腾讯云 49.232.160.7）
+
+- 访问地址：`http://49.232.160.7:8083/`（8083 需在腾讯云控制台防火墙放行）
+- 拓扑：nginx:8083（静态 dist + `/api/` 反代）→ Node 后端 127.0.0.1:8787（pm2 托管 `invoice-evidence-server`，不对外）
+- 安全：OCR/验真/DeepSeek 接口需 `Authorization: Bearer <token>`（登录获得），防止密钥额度被匿名消耗；健康检查与账户接口开放
+- 服务器路径：后端 `/www/wwwroot/invoice-evidence/server`（入口 `start.mjs`），前端 `/www/wwwroot/invoice-evidence-web`，nginx vhost `/www/server/panel/vhost/nginx/invoice-evidence-web.conf`
+- 账户数据：`server/data/users.json`，每日 3 点自动备份至 `/www/backup`（保留 7 份）；业务数据在各用户浏览器 localStorage（按账户命名空间隔离，不上传服务器）
+- 更新发布：本地 `npm run build` → `rsync -a dist/ root@服务器:/www/wwwroot/invoice-evidence-web/`；后端改动 `scp server/*.mjs` 后 `pm2 restart invoice-evidence-server`
+- 上线密钥（可选）：在服务器 `server/` 下建 `.env` 填入 `TENCENT_CLOUD_SECRET_ID/KEY`、`DEEPSEEK_API_KEY` 后 `pm2 restart`，即可启用真实 OCR 与 DeepSeek（缺失时自动模拟模式）
+
+## 10. 产品边界与一期范围
 
 - 一期覆盖八类高频发票：餐饮、住宿、交通、车辆、办公、咨询服务、广告推广、租赁物业（三类做深：餐饮、住宿、咨询服务）。
 - 一期只生成凭证草稿，不自动过账；不做自动申报、不做完整纳税申报表、不做全量合同/银行流水系统。
@@ -199,7 +220,7 @@ zip -r 发票溯源证据链系统.zip . \
 - 验真、凭证接口仍为模拟/预留；OCR 为真实调用（腾讯云），DeepSeek 为真实调用（失败回退本地）。
 - 高风险、低置信度、重大金额、关联交易、证据缺失必须人工确认，不得自动放行。
 
-## 10. 常见问题
+## 11. 常见问题
 
 | 问题 | 处理 |
 |---|---|
@@ -208,17 +229,20 @@ zip -r 发票溯源证据链系统.zip . \
 | 想清空演示数据 | 浏览器控制台执行 `localStorage.clear()`，或删除键 `invoice_evidence_cases` / `invoice_evidence_active_case_id` 等（前缀 `invoice_evidence_`） |
 | DeepSeek 响应慢 | 推理模型已强制 `reasoning_effort: 'low'`（默认深思考 30-60s+，low 档 3-20s）；45s 超时自动回退本地 |
 | 修改后端代码不生效 | 重启 `npm run dev`（新启动器下后端崩溃自动重启，手动改代码仍建议重启） |
+| 忘记密码 | 本期无找回功能；演示环境可删除 `server/data/users.json` 中对应账户后重新注册（该账户本地数据仍在浏览器命名空间中） |
+| 换账户后看不到之前的发票 | 数据按账户隔离（`invoice_evidence_u{用户ID}__*`），退出后用原账户登录即可看到 |
 
-## 11. 文档索引
+## 12. 文档索引
 
 - 项目记忆：`AGENTS.md`（产品定位与决策）、`agent.md`（开发完成态详细记录）、`progress.md`（Gate 验收记录）
 - 核心架构：`发票入账系统产品架构方案.md`
 - 文档索引：`docs/CO_20260719_文档瘦身索引.md`
 - 历史过程归档：`docs/archive/202607-process/`
 
-## 12. 版本记录
+## 13. 版本记录
 
 | 日期 | 里程碑 |
 |---|---|
 | 2026-07 | Gate 1 工程骨架 → Gate 2A 可操作闭环 → Gate 2B 多发票状态机 → Gate 3 AI 业务问答与证据闸口 |
 | 2026-08 | 腾讯云 OCR + DeepSeek 全链路接入、证据模板 Word 化、异常工作台/风险驾驶舱升级、证据补充与驾驶舱任务卡片 UI 化，一期功能开发完毕 |
+| 2026-08 | 账户系统：注册/登录/令牌会话，数据按账户命名空间隔离，登录页与路由守卫；修复冒烟脚本 body 未发送、中文路径下后端不启动两处存量问题 |

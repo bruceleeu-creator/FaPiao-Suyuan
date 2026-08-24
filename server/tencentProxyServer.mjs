@@ -12,6 +12,8 @@
 
 import http from 'node:http';
 import process from 'node:process';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   DEFAULT_HOST,
   SERVICE_NAME,
@@ -31,6 +33,7 @@ import {
 import { recognizeVatInvoice } from './tencentOcrClient.mjs';
 import { checkDeepSeekConfigured } from './deepseekConfig.mjs';
 import { interpretInvoiceFields, generateInvoiceQuestions, assessInvoiceRisk } from './deepseekClient.mjs';
+import { registerUser, verifyCredential, issueToken, verifyToken } from './authStore.mjs';
 
 // 安全日志：只输出非敏感信息
 // 不输出请求体原文（可能含敏感字段）、不输出密钥值、不输出完整 headers
@@ -51,11 +54,33 @@ function sendJson(res, statusCode, payload, corsOrigin) {
   if (corsOrigin) {
     headers['Access-Control-Allow-Origin'] = corsOrigin;
     headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS';
-    headers['Access-Control-Allow-Headers'] = 'Content-Type';
+    headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization';
     headers['Vary'] = 'Origin';
   }
   res.writeHead(statusCode, headers);
   res.end(body);
+}
+
+// 公网部署安全：消耗腾讯云/DeepSeek 密钥额度的接口必须携带有效登录令牌
+// （Authorization: Bearer <token>，由 /api/auth/login 签发）
+// 未登录/令牌无效返回 401；健康检查与账户接口不受限
+function requireApiToken(req, res, corsOrigin, pathname) {
+  const header = req.headers.authorization || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
+  const result = verifyToken(token);
+  if (result.ok) return true;
+  const traceId = generateTraceId();
+  const payload = {
+    ok: false,
+    service: 'auth',
+    status: 'error',
+    message: result.message || '请先登录后再调用该接口。',
+    traceId,
+    timestamp: new Date().toISOString(),
+  };
+  logRequest(req.method, pathname, 401, traceId);
+  sendJson(res, 401, payload, corsOrigin);
+  return false;
 }
 
 // 解析请求 body 为 JSON
@@ -109,7 +134,7 @@ async function handleRequest(req, res) {
   if (method === 'OPTIONS') {
     const headers = {
       'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     };
     if (corsOrigin) {
       headers['Access-Control-Allow-Origin'] = corsOrigin;
@@ -135,8 +160,9 @@ async function handleRequest(req, res) {
     return;
   }
 
-  // 2. POST /api/tencent/ocr/invoice
-  if (method === 'POST' && pathname === '/api/tencent/ocr/invoice') {
+  // 2. POST /api/auth/register | /api/auth/login | /api/auth/me
+  // 账户系统：注册/登录/令牌校验（数据按账户隔离的前置条件）
+  if (method === 'POST' && pathname.startsWith('/api/auth/')) {
     const bodyResult = await parseJsonBody(req);
     if (!bodyResult.ok) {
       const payload = buildErrorResponse(ERROR_CODES.INVALID_JSON, bodyResult.error);
@@ -145,7 +171,106 @@ async function handleRequest(req, res) {
       return;
     }
 
-    const { imageBase64, imageUrl, isPdf, pdfPageNumber } = bodyResult.data || {};
+    const traceId = generateTraceId();
+    const authFail = (statusCode, message) => {
+      const payload = {
+        ok: false,
+        service: 'auth',
+        status: 'error',
+        message,
+        traceId,
+        timestamp: new Date().toISOString(),
+      };
+      logRequest(method, pathname, statusCode, traceId);
+      sendJson(res, statusCode, payload, corsOrigin);
+    };
+
+    // 2.1 POST /api/auth/register {username, password} → 注册成功即登录（返回令牌）
+    if (pathname === '/api/auth/register') {
+      const { username, password } = bodyResult.data || {};
+      const result = registerUser({ username, password });
+      if (!result.ok) {
+        authFail(result.status, result.message);
+        return;
+      }
+      const { token, expiresAt } = issueToken(result.user);
+      const payload = {
+        ok: true,
+        service: 'auth',
+        status: 'success',
+        data: { token, userId: result.user.id, username: result.user.username, expiresAt },
+        traceId,
+        timestamp: new Date().toISOString(),
+      };
+      logRequest(method, pathname, 201, traceId);
+      sendJson(res, 201, payload, corsOrigin);
+      return;
+    }
+
+    // 2.2 POST /api/auth/login {username, password} → 登录失败统一 401，不区分用户名/密码错误
+    if (pathname === '/api/auth/login') {
+      const { username, password } = bodyResult.data || {};
+      const user = verifyCredential({ username, password });
+      if (!user) {
+        authFail(401, '用户名或密码不正确。');
+        return;
+      }
+      const { token, expiresAt } = issueToken(user);
+      const payload = {
+        ok: true,
+        service: 'auth',
+        status: 'success',
+        data: { token, userId: user.id, username: user.username, expiresAt },
+        traceId,
+        timestamp: new Date().toISOString(),
+      };
+      logRequest(method, pathname, 200, traceId);
+      sendJson(res, 200, payload, corsOrigin);
+      return;
+    }
+
+    // 2.3 POST /api/auth/me {token} → 校验令牌并返回账户信息（页面刷新后恢复会话）
+    if (pathname === '/api/auth/me') {
+      const { token } = bodyResult.data || {};
+      const result = verifyToken(token);
+      if (!result.ok) {
+        authFail(result.status, result.message);
+        return;
+      }
+      const payload = {
+        ok: true,
+        service: 'auth',
+        status: 'success',
+        data: {
+          userId: result.user.id,
+          username: result.user.username,
+          expiresAt: result.expiresAt,
+        },
+        traceId,
+        timestamp: new Date().toISOString(),
+      };
+      logRequest(method, pathname, 200, traceId);
+      sendJson(res, 200, payload, corsOrigin);
+      return;
+    }
+
+    // /api/auth/ 下其他路径
+    authFail(404, `路径 ${pathname} 不存在。`);
+    return;
+  }
+
+  // 3. POST /api/tencent/ocr/invoice
+  if (method === 'POST' && pathname === '/api/tencent/ocr/invoice') {
+      const bodyResult = await parseJsonBody(req);
+      if (!bodyResult.ok) {
+        const payload = buildErrorResponse(ERROR_CODES.INVALID_JSON, bodyResult.error);
+        logRequest(method, pathname, 400, payload.traceId);
+        sendJson(res, 400, payload, corsOrigin);
+        return;
+      }
+      if (!requireApiToken(req, res, corsOrigin, pathname)) return;
+
+      const { imageBase64, imageUrl, isPdf, pdfPageNumber } = bodyResult.data || {};
 
     // 没有图片/PDF 数据时继续走预留响应，兼容当前前端仅传文件名的阶段
     if (!imageBase64 && !imageUrl) {
@@ -201,6 +326,7 @@ async function handleRequest(req, res) {
       sendJson(res, 400, payload, corsOrigin);
       return;
     }
+    if (!requireApiToken(req, res, corsOrigin, pathname)) return;
     // 当前阶段：不调用真实腾讯云接口，直接返回预留响应
     const payload = buildVerifyReservedResponse();
     logRequest(method, pathname, 200, payload.traceId);
@@ -219,6 +345,7 @@ async function handleRequest(req, res) {
       sendJson(res, 400, payload, corsOrigin);
       return;
     }
+    if (!requireApiToken(req, res, corsOrigin, pathname)) return;
 
     const { ocrFields, currentForm } = bodyResult.data || {};
     const deepseekResult = await interpretInvoiceFields({ ocrFields, currentForm });
@@ -249,6 +376,7 @@ async function handleRequest(req, res) {
       sendJson(res, 400, payload, corsOrigin);
       return;
     }
+    if (!requireApiToken(req, res, corsOrigin, pathname)) return;
     const questionsResult = await generateInvoiceQuestions({ invoice: bodyResult.data?.invoice });
     const traceId = generateTraceId();
     const payload = {
@@ -277,6 +405,7 @@ async function handleRequest(req, res) {
       sendJson(res, 400, payload, corsOrigin);
       return;
     }
+    if (!requireApiToken(req, res, corsOrigin, pathname)) return;
     const { invoice, businessEvent, evidenceChain, answers } = bodyResult.data || {};
     const riskResult = await assessInvoiceRisk({ invoice, businessEvent, evidenceChain, answers });
     const traceId = generateTraceId();
@@ -300,6 +429,9 @@ async function handleRequest(req, res) {
   const knownPaths = [
     '/health',
     '/api/tencent/health',
+    '/api/auth/register',
+    '/api/auth/login',
+    '/api/auth/me',
     '/api/tencent/ocr/invoice',
     '/api/tencent/invoice/verify',
     '/api/deepseek/interpret',
@@ -384,6 +516,8 @@ export function startServer() {
 
 // 当直接运行此文件时（node server/tencentProxyServer.mjs）启动服务器
 // 被 import 时不启动
-if (import.meta.url === `file://${process.argv[1]}`) {
+// 用 fileURLToPath 对比真实路径：目录含中文/空格时 import.meta.url 会被百分号编码，
+// 直接字符串拼接对比会失配导致服务静默不启动
+if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
   startServer();
 }

@@ -1,0 +1,308 @@
+{
+  "schema_version": "mimosa-task-review/v2",
+  "run_id": "20260824T052739648Z-8181-faf864b0cde7",
+  "run_status": "completed",
+  "errors": [],
+  "coverage": {
+    "schema_version": "mimosa-hook-coverage/v1",
+    "status": "complete",
+    "scope": "hook_observed_diff",
+    "baseline": {
+      "complete": true,
+      "captured_files": 93,
+      "candidate_limit": 5000,
+      "truncated": false,
+      "enumeration_error_count": 0,
+      "snapshot_error_count": 0,
+      "compensated_target_count": 1
+    },
+    "change_tracking": {
+      "touched_observed": 1,
+      "touched_retained": 1,
+      "truncated": false,
+      "bash_mutation": true,
+      "bash_discovered": 1,
+      "bash_discovery_limit": 80,
+      "bash_discovery_truncated": false
+    },
+    "candidates": {
+      "eligible_files": 1,
+      "selected_files": 1,
+      "limit": 20,
+      "truncated": false
+    },
+    "scanning": {
+      "required_files": 1,
+      "scanned_files": 1,
+      "skipped_files": 0,
+      "failed_files": 0,
+      "project_checks_required": 0,
+      "project_checks_completed": 0
+    },
+    "notification": {
+      "eligible_findings": 0,
+      "detailed_findings": 0,
+      "detail_limit": 3,
+      "truncated": false
+    },
+    "reason_counts": {},
+    "reasons": [],
+    "reasons_truncated": false
+  },
+  "generated_at": "2026-08-24T05:27:39.648Z",
+  "session_id": "sess_b99c1387-26d7-488b-ab93-9a9308b84823",
+  "target": ".",
+  "revision": null,
+  "rules_version": "unavailable",
+  "diff_hash": "28af803f84059f0de8944b747d92ed00855e95717b8fb3ac08ebe1d5b56194ff",
+  "diff": {
+    "algorithm": "sha256",
+    "changed_file_count": 1,
+    "changed_files": [
+      {
+        "file": "src/integrations/integrationConfigStore.test.ts",
+        "ranges": [
+          {
+            "start": 6,
+            "end": 12
+          },
+          {
+            "start": 116,
+            "end": 116
+          },
+          {
+            "start": 234,
+            "end": 234
+          },
+          {
+            "start": 245,
+            "end": 245
+          },
+          {
+            "start": 249,
+            "end": 251
+          },
+          {
+            "start": 258,
+            "end": 260
+          },
+          {
+            "start": 269,
+            "end": 269
+          },
+          {
+            "start": 271,
+            "end": 272
+          },
+          {
+            "start": 291,
+            "end": 291
+          },
+          {
+            "start": 298,
+            "end": 298
+          },
+          {
+            "start": 300,
+            "end": 300
+          }
+        ],
+        "before_hash": "183fe04cb259a8a92edea4fb99b250140033b302b782d7a71041617aa0f31567",
+        "after_hash": "e09d1b8ccc7c48ab75ddad68896eb90e3f90a979f616f98e56236cfd50c5a309"
+      }
+    ]
+  },
+  "timing": {
+    "started_at": "2026-08-24T05:27:39.134Z",
+    "completed_at": "2026-08-24T05:27:39.648Z",
+    "duration_ms": 514,
+    "measurement": "hook_wall_clock"
+  },
+  "tokens": {
+    "input": 0,
+    "output": 0,
+    "total": 0,
+    "model_calls": 0,
+    "measurement": "known-zero"
+  },
+  "telemetry": {
+    "schemaVersion": "mimosa-gate-telemetry/v1",
+    "profile": "gate",
+    "operation": "Stop",
+    "outcome": "complete",
+    "latencyMs": 514,
+    "peakMemoryBytes": 208060416,
+    "memoryMeasurement": "max-observed-process-rss",
+    "scannedFiles": 1,
+    "cache": {
+      "hits": 0,
+      "misses": 0,
+      "measurement": "not-applicable"
+    },
+    "denyCount": 0,
+    "tokens": {
+      "input": 0,
+      "output": 0,
+      "total": 0,
+      "modelCalls": 0,
+      "measurement": "known-zero"
+    }
+  },
+  "finding_count": 0,
+  "rewake_finding_count": 0,
+  "evidence_boundary": {
+    "scan": "candidate",
+    "static_fix_verification": "observed_static_only",
+    "runtime_verification": "not_performed"
+  },
+  "finding_events": [
+    {
+      "finding_id": "mimosa-c0e6dcf394c04060bcd04114",
+      "file": "src/integrations/integrationConfigStore.test.ts",
+      "line": 265,
+      "rule_id": "security",
+      "severity": "high",
+      "category": "硬编码凭据",
+      "status": "blocked",
+      "decision": "deny",
+      "at": "2026-08-24T05:24:10.194Z",
+      "evidence": {
+        "kind": "source",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "fb83845bb342fe7cd932ebdf72d44e4e5e961a62506279fb5ad7b3c2634c9757",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-2ed3b94539caa33791b9cd10",
+      "file": "src/integrations/integrationConfigStore.test.ts",
+      "line": 265,
+      "rule_id": "security",
+      "severity": "high",
+      "category": "硬编码凭据",
+      "status": "blocked",
+      "decision": "deny",
+      "at": "2026-08-24T05:24:28.307Z",
+      "evidence": {
+        "kind": "source",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "5e88fb61bada0b1e1f98673d174730d03d25bfa33f1df98a32e75180dfe02c3e",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-c0e6dcf394c04060bcd04114",
+      "file": "src/integrations/integrationConfigStore.test.ts",
+      "line": 265,
+      "rule_id": "security",
+      "severity": "high",
+      "category": "硬编码凭据",
+      "status": "fixed_candidate",
+      "decision": "repair_observed",
+      "at": "2026-08-24T05:24:44.370Z",
+      "evidence": {
+        "kind": "source",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "fb83845bb342fe7cd932ebdf72d44e4e5e961a62506279fb5ad7b3c2634c9757",
+        "candidate_before_evidence_hash": "fb83845bb342fe7cd932ebdf72d44e4e5e961a62506279fb5ad7b3c2634c9757",
+        "post_change_evidence_hash_at_previous_location": "9ac4b769f1aad9a2806184ef2984389a4d215b0a444514760d6bda3f6c552b79",
+        "runtime_oracle": false,
+        "verification": {
+          "method": "mimosa-posttool-static-rescan",
+          "finding_absent": true,
+          "runtime_oracle": false
+        }
+      }
+    },
+    {
+      "finding_id": "mimosa-c0e6dcf394c04060bcd04114",
+      "file": "src/integrations/integrationConfigStore.test.ts",
+      "line": 265,
+      "rule_id": "security",
+      "severity": "high",
+      "category": "硬编码凭据",
+      "status": "static_verified",
+      "decision": "static_rescan_passed",
+      "at": "2026-08-24T05:24:44.370Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "observed",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "fb83845bb342fe7cd932ebdf72d44e4e5e961a62506279fb5ad7b3c2634c9757",
+        "candidate_before_evidence_hash": "fb83845bb342fe7cd932ebdf72d44e4e5e961a62506279fb5ad7b3c2634c9757",
+        "post_change_evidence_hash_at_previous_location": "9ac4b769f1aad9a2806184ef2984389a4d215b0a444514760d6bda3f6c552b79",
+        "runtime_oracle": false,
+        "verification": {
+          "method": "mimosa-posttool-static-rescan",
+          "finding_absent": true,
+          "runtime_oracle": false
+        }
+      }
+    },
+    {
+      "finding_id": "mimosa-2ed3b94539caa33791b9cd10",
+      "file": "src/integrations/integrationConfigStore.test.ts",
+      "line": 265,
+      "rule_id": "security",
+      "severity": "high",
+      "category": "硬编码凭据",
+      "status": "fixed_candidate",
+      "decision": "repair_observed",
+      "at": "2026-08-24T05:24:44.370Z",
+      "evidence": {
+        "kind": "source",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "5e88fb61bada0b1e1f98673d174730d03d25bfa33f1df98a32e75180dfe02c3e",
+        "candidate_before_evidence_hash": "5e88fb61bada0b1e1f98673d174730d03d25bfa33f1df98a32e75180dfe02c3e",
+        "post_change_evidence_hash_at_previous_location": "9ac4b769f1aad9a2806184ef2984389a4d215b0a444514760d6bda3f6c552b79",
+        "runtime_oracle": false,
+        "verification": {
+          "method": "mimosa-posttool-static-rescan",
+          "finding_absent": true,
+          "runtime_oracle": false
+        }
+      }
+    },
+    {
+      "finding_id": "mimosa-2ed3b94539caa33791b9cd10",
+      "file": "src/integrations/integrationConfigStore.test.ts",
+      "line": 265,
+      "rule_id": "security",
+      "severity": "high",
+      "category": "硬编码凭据",
+      "status": "static_verified",
+      "decision": "static_rescan_passed",
+      "at": "2026-08-24T05:24:44.370Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "observed",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "5e88fb61bada0b1e1f98673d174730d03d25bfa33f1df98a32e75180dfe02c3e",
+        "candidate_before_evidence_hash": "5e88fb61bada0b1e1f98673d174730d03d25bfa33f1df98a32e75180dfe02c3e",
+        "post_change_evidence_hash_at_previous_location": "9ac4b769f1aad9a2806184ef2984389a4d215b0a444514760d6bda3f6c552b79",
+        "runtime_oracle": false,
+        "verification": {
+          "method": "mimosa-posttool-static-rescan",
+          "finding_absent": true,
+          "runtime_oracle": false
+        }
+      }
+    }
+  ],
+  "findings": [],
+  "artifacts": {
+    "immutable_report": ".mimosa/reports/task-review-sess_b99c1387-26d7-488b-ab93-9a9308b84823-20260824T052739648Z-8181-faf864b0cde7.json",
+    "latest_report": ".mimosa/reports/task-review-sess_b99c1387-26d7-488b-ab93-9a9308b84823.json",
+    "history_summary": ".mimosa/history/run-20260824T052739648Z-8181-faf864b0cde7.json"
+  }
+}

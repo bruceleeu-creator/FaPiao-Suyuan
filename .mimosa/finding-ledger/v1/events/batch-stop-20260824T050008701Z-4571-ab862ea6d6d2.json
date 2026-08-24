@@ -1,0 +1,190 @@
+{
+  "schemaVersion": "mimosa-finding-ledger-batch/v1",
+  "batchId": "stop-20260824T050008701Z-4571-ab862ea6d6d2",
+  "runId": "20260824T050008701Z-4571-ab862ea6d6d2",
+  "runStatus": "inconclusive",
+  "coverage": {
+    "status": "partial",
+    "reasons": [
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": ".tsbuild/vite.config.d.ts",
+        "detail": "file is missing from task baseline",
+        "affectsCompletion": true
+      },
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": ".tsbuild/vite.config.js",
+        "detail": "file is missing from task baseline",
+        "affectsCompletion": true
+      },
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": ".tsbuild/vitest.config.d.ts",
+        "detail": "file is missing from task baseline",
+        "affectsCompletion": true
+      },
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": ".tsbuild/vitest.config.js",
+        "detail": "file is missing from task baseline",
+        "affectsCompletion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": ".tsbuild/vite.config.d.ts",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affectsCompletion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": ".tsbuild/vite.config.js",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affectsCompletion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": ".tsbuild/vitest.config.d.ts",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affectsCompletion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": ".tsbuild/vitest.config.js",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affectsCompletion": true
+      }
+    ]
+  },
+  "source": {
+    "component": "zcode-hook",
+    "operationId": "Stop"
+  },
+  "revision": null,
+  "diffHash": "59b4cb553a223916bbc87baac126c5dce402363918628006ba294f53ac645f3a",
+  "rulesVersion": "unavailable",
+  "sessionHash": "7d97f932aece818dbf744561fa84065a8daec3a74368aa165ebc87b520702fcb",
+  "reportRef": ".mimosa/reports/task-review-sess_b99c1387-26d7-488b-ab93-9a9308b84823-20260824T050008701Z-4571-ab862ea6d6d2.json",
+  "events": [
+    {
+      "eventId": "hook-79938b2b7c711ece19ddefc037cf4a86",
+      "findingId": "mimosa-8fe1859d8946cd9c2f60105d",
+      "type": "finding_blocked",
+      "at": "2026-08-24T04:54:06.839Z",
+      "identity": {
+        "projectRelativeFile": "src/ui/pages/LoginPage.tsx",
+        "ruleId": "security",
+        "codeEvidenceHash": "a189604be71776c6fda1e6b94a48f82776ed4f8a5f5b4520ec35f6a6d3ceed69",
+        "confidence": "stable"
+      },
+      "scope": "direct",
+      "line": 112,
+      "endLine": 112,
+      "reasonCode": "deny",
+      "reportedToAgent": true,
+      "evidence": {
+        "kind": "source",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "evidenceHash": "a189604be71776c6fda1e6b94a48f82776ed4f8a5f5b4520ec35f6a6d3ceed69"
+      },
+      "sequence": 0
+    },
+    {
+      "eventId": "hook-35393e2cc0487dd91fc6808389b906c2",
+      "findingId": "mimosa-8fe1859d8946cd9c2f60105d",
+      "type": "static_fix_verified",
+      "at": "2026-08-24T04:54:27.450Z",
+      "identity": {
+        "projectRelativeFile": "src/ui/pages/LoginPage.tsx",
+        "ruleId": "security",
+        "codeEvidenceHash": "a189604be71776c6fda1e6b94a48f82776ed4f8a5f5b4520ec35f6a6d3ceed69",
+        "confidence": "stable"
+      },
+      "scope": "direct",
+      "line": 112,
+      "endLine": 112,
+      "reasonCode": "static_rescan_passed",
+      "reportedToAgent": false,
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "observed",
+        "producer": "deterministic",
+        "evidenceHash": "a189604be71776c6fda1e6b94a48f82776ed4f8a5f5b4520ec35f6a6d3ceed69"
+      },
+      "sequence": 1
+    }
+  ],
+  "observedFindingIds": [],
+  "verifiedFiles": [
+    {
+      "file": "src/auth/authStorage.ts",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "src/storage/localStore.ts",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "src/auth/AuthContext.tsx",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "src/ui/pages/LoginPage.tsx",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "src/App.tsx",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "src/ui/Layout.tsx",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "vite.config.ts",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "src/auth/authStorage.test.ts",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": ".tsbuild/vite.config.d.ts",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": ".tsbuild/vite.config.js",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": ".tsbuild/vitest.config.d.ts",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": ".tsbuild/vitest.config.js",
+      "direct": "complete",
+      "projectContext": "partial"
+    }
+  ],
+  "recordedAt": "2026-08-24T05:00:08.924Z"
+}
