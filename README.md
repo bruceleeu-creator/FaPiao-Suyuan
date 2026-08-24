@@ -209,7 +209,7 @@ zip -r 发票溯源证据链系统.zip . \
 - 安全：OCR/验真/DeepSeek 接口需 `Authorization: Bearer <token>`（登录获得），防止密钥额度被匿名消耗；健康检查与账户接口开放
 - 服务器路径：后端 `/www/wwwroot/invoice-evidence/server`（入口 `start.mjs`），前端 `/www/wwwroot/invoice-evidence-web`，nginx vhost `/www/server/panel/vhost/nginx/invoice-evidence-web.conf`
 - 账户数据：`server/data/users.json`，每日 3 点自动备份至 `/www/backup`（保留 7 份）；业务数据在各用户浏览器 localStorage（按账户命名空间隔离，不上传服务器）
-- 更新发布：本地 `npm run build` → `rsync -a dist/ root@服务器:/www/wwwroot/invoice-evidence-web/`；后端改动 `scp server/*.mjs` 后 `pm2 restart invoice-evidence-server`
+- 更新发布：**CI/CD 自动部署**——推送到 GitHub main 分支即自动执行（验证→构建→上传→pm2 重启→健康检查，约 3 分钟），见 `.github/workflows/deploy.yml` 与仓库 Actions 页；也可在 Actions 页手动触发（Run workflow）。部署密钥存仓库 Secrets，账户数据 server/data 永不被部署覆盖
 - 上线密钥（可选）：在服务器 `server/` 下建 `.env` 填入 `TENCENT_CLOUD_SECRET_ID/KEY`、`DEEPSEEK_API_KEY` 后 `pm2 restart`，即可启用真实 OCR 与 DeepSeek（缺失时自动模拟模式）
 
 ## 10. 产品边界与一期范围

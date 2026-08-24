@@ -116,6 +116,7 @@ npm run validate      # 一键全验证
 - 服务器路径：后端 `/www/wwwroot/invoice-evidence/server`，前端 `/www/wwwroot/invoice-evidence-web`，vhost `/www/server/panel/vhost/nginx/invoice-evidence-web.conf`。
 - 备份：每日 3 点 crontab 备份 `server/data` 到 `/www/backup`（留 7 份）。
 - 更新发布：本地 `npm run build` → `rsync -a dist/ root@49.232.160.7:/www/wwwroot/invoice-evidence-web/`；后端改动 `scp server/*.mjs` 后 `pm2 restart invoice-evidence-server`。
+- **CI/CD 自动部署（2026-08-24）**：`.github/workflows/deploy.yml`——推送 main 自动 npm ci → validate → rsync 前端/后端 → pm2 restart → 内外网健康检查；密钥在仓库 Secrets（DEPLOY_SSH_KEY/HOST/USER，专用部署密钥 ~/.ssh/fapiao_deploy）；concurrency 防并发；账户数据永不在部署范围。
 - 上线密钥（可选）：服务器 `server/.env` 填 `TENCENT_CLOUD_SECRET_ID/KEY`、`DEEPSEEK_API_KEY` 后 `pm2 restart`，启用真实 OCR/DeepSeek（缺失自动模拟模式）。
 
 ## 5. 涉及文件索引
