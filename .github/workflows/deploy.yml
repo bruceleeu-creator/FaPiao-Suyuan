@@ -1,0 +1,73 @@
+# CI/CD：推送 main 自动部署到生产服务器（腾讯云 49.232.160.7:8083）
+#
+# 流程：检出 → 全量验证（368 测试 + 构建 + 59 项后端冒烟）→ rsync 上传前端/后端
+#       → pm2 重启 → 外网健康检查（失败则本次部署标红，不会静默）
+# 密钥：DEPLOY_SSH_KEY / DEPLOY_HOST / DEPLOY_USER（仓库 Secrets，本地不入库）
+# 边界：账户数据 server/data/users.json 不在部署范围（永不覆盖生产账户库）
+
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: # 支持手动触发（Actions 页面 Run workflow）
+
+# 同一时间只允许一个部署任务排队执行，避免交叉覆盖
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 全量验证（测试 + 构建 + 后端冒烟）
+        run: npm run validate
+
+      - name: 配置 SSH（专用部署密钥）
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: 上传前端（dist → /www/wwwroot/invoice-evidence-web/）
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          rsync -a --delete dist/ "$DEPLOY_USER@$DEPLOY_HOST:/www/wwwroot/invoice-evidence-web/"
+
+      - name: 上传后端（server/*.mjs，不含账户数据）
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          rsync -a server/*.mjs "$DEPLOY_USER@$DEPLOY_HOST:/www/wwwroot/invoice-evidence/server/"
+
+      - name: 重启后端并做健康检查
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" 'pm2 restart invoice-evidence-server'
+          sleep 2
+          echo "内网健康检查："
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" 'curl -fsS --max-time 10 http://127.0.0.1:8787/health | grep -o "\"ok\":[a-z]*"'
+          echo "外网健康检查："
+          curl -fsS --max-time 15 "http://$DEPLOY_HOST:8083/api/tencent/health" | grep -o '"ok":true' || (echo "外网健康检查失败！请检查 nginx 与防火墙" && exit 1)
