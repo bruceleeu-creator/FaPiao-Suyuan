@@ -15,6 +15,7 @@ import {
 import { getTencentCloudOcrStatusText } from '../../integrations/tencentCloudInvoiceOcr';
 import { getTencentCloudVerifyStatusText } from '../../integrations/tencentCloudInvoiceVerify';
 import { PageHeader } from '../components/PageHeader';
+import { AdminKeysPanel } from '../components/AdminKeysPanel';
 
 const INTEGRATION_KEYS: IntegrationKey[] = ['ocr', 'verify', 'voucher'];
 
@@ -82,8 +83,10 @@ export function IntegrationSettingsPage() {
       <PageHeader
         eyebrow="接口配置中心"
         title="OCR / 验真 / 凭证接口配置"
-        description="OCR 已通过后端代理接入腾讯云真实识别，模式固定为正式；验真与凭证接口一期使用内置通道。前端不保存任何 API Key / Token / SecretId / SecretKey，密钥由后端代理通过 .env 环境变量注入。"
+        description="管理员可在下方「密钥配置」中直接填写 DeepSeek 与腾讯云密钥（保存即生效）；OCR 经后端代理调用腾讯云真实识别，验真与凭证接口一期使用内置通道。"
       />
+
+      <AdminKeysPanel />
 
       <div className="boundary-callout" role="note">
         <Zap size={18} aria-hidden="true" />

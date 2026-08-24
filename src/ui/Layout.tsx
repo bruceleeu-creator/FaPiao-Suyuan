@@ -84,6 +84,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
             <div className="sidebar-user-id">
               <UserCircle2 size={16} aria-hidden="true" />
               <span title={user.username}>{user.username}</span>
+              {user.role === 'admin' && <em className="sidebar-admin-badge">管理员</em>}
             </div>
             <button type="button" className="sidebar-logout" onClick={logout}>
               <LogOut size={14} aria-hidden="true" />

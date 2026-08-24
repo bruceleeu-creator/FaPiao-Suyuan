@@ -32,3 +32,9 @@ server/.tencent-credentials.enc
 
 # Account database (users.json / auth.secret, never commit)
 server/data/
+
+# DeepSeek key encrypted store (never commit)
+server/.deepseek-credentials.enc
+
+# Mimosa scanner runtime state (never commit)
+.mimosa/

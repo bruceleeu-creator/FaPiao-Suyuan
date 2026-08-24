@@ -17,6 +17,8 @@ export interface StoredAuthUser {
   username: string;
   token: string;
   expiresAt: number;
+  // 账户角色：第一个注册的账户为 admin（可配置全局密钥），缺省 user
+  role?: 'admin' | 'user';
 }
 
 interface StoredAuth {

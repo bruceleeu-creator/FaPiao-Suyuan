@@ -6,6 +6,10 @@
 // - 加密密钥来自环境变量 TENCENT_CREDENTIALS_KEY，或本地自动生成的密钥文件
 // - 密钥文件和密文文件都应加入 .gitignore，不进入版本库
 // - 本模块不打印、不返回完整密钥到日志/响应体
+//
+// 2026-08-24：抽出通用 encryptJsonToFile / decryptJsonToFile 供 apiKeyStore（DeepSeek）
+// 复用同一套加密体系；存储目录可用环境变量 CREDENTIAL_DATA_DIR 覆盖（默认本模块目录，
+// 兼容既有本地文件），冒烟测试指向临时目录避免污染。
 
 import { createCipheriv, createDecipheriv, randomBytes, createHash } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
@@ -14,6 +18,14 @@ import path from 'node:path';
 import process from 'node:process';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+function resolveCredentialDir() {
+  const override = process.env.CREDENTIAL_DATA_DIR;
+  if (override && override.trim()) return override;
+  return __dirname;
+}
+
+const TENCENT_FILE = '.tencent-credentials.enc';
 
 export const CREDENTIAL_FILE = path.join(__dirname, '.tencent-credentials.enc');
 export const KEY_FILE = path.join(__dirname, '.tencent-credential-key');
@@ -26,7 +38,7 @@ function resolveEncryptionKey() {
   }
 
   if (existsSync(KEY_FILE)) {
-    const fileKey = readFileSync(KEY_FILE, 'utf8').trim();
+    const fileKey = readFileSync(KEY_FILE, 'utf-8').trim();
     if (fileKey.length >= 16) {
       return createHash('sha256').update(fileKey).digest();
     }
@@ -39,45 +51,57 @@ function resolveEncryptionKey() {
   return createHash('sha256').update(generated).digest();
 }
 
-function encryptJson(plainObject) {
+// 通用：加密任意 JSON 对象并写入凭据目录下的指定文件
+export function encryptJsonToFile(fileName, plainObject) {
   const key = resolveEncryptionKey();
   const iv = randomBytes(12);
   const cipher = createCipheriv('aes-256-gcm', key, iv);
   const plaintext = JSON.stringify(plainObject);
-  const encrypted = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
+  const encrypted = Buffer.concat([cipher.update(plaintext, 'utf-8'), cipher.final()]);
   const authTag = cipher.getAuthTag();
-  return JSON.stringify({
+  const payload = JSON.stringify({
     version: 1,
     algorithm: 'aes-256-gcm',
     iv: iv.toString('base64'),
     authTag: authTag.toString('base64'),
     data: encrypted.toString('base64'),
   });
+  const target = path.join(resolveCredentialDir(), fileName);
+  mkdirSync(path.dirname(target), { recursive: true });
+  writeFileSync(target, `${payload}\n`, { mode: 0o600 });
 }
 
-function decryptJson(payloadString) {
-  const key = resolveEncryptionKey();
-  const payload = JSON.parse(payloadString);
-  if (payload.version !== 1 || payload.algorithm !== 'aes-256-gcm') {
-    throw new Error('Unsupported credential encryption format');
+// 通用：从凭据目录下的指定文件读取并解密 JSON 对象（不存在或损坏返回空对象）
+export function decryptJsonFromFile(fileName) {
+  const target = path.join(resolveCredentialDir(), fileName);
+  if (!existsSync(target)) return {};
+  try {
+    const raw = readFileSync(target, 'utf-8').trim();
+    const payload = JSON.parse(raw);
+    if (payload.version !== 1 || payload.algorithm !== 'aes-256-gcm') {
+      throw new Error('Unsupported credential encryption format');
+    }
+    const key = resolveEncryptionKey();
+    const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(payload.iv, 'base64'));
+    decipher.setAuthTag(Buffer.from(payload.authTag, 'base64'));
+    const decrypted = Buffer.concat([
+      decipher.update(Buffer.from(payload.data, 'base64')),
+      decipher.final(),
+    ]);
+    return JSON.parse(decrypted.toString('utf-8'));
+  } catch (err) {
+    // 解密失败时不抛给调用方，避免服务因凭据文件损坏而不可用
+    console.error(`[credentialStore] ${fileName} 解密失败，请检查 TENCENT_CREDENTIALS_KEY 或本地密钥文件。`);
+    return {};
   }
-  const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(payload.iv, 'base64'));
-  decipher.setAuthTag(Buffer.from(payload.authTag, 'base64'));
-  const decrypted = Buffer.concat([
-    decipher.update(Buffer.from(payload.data, 'base64')),
-    decipher.final(),
-  ]);
-  return JSON.parse(decrypted.toString('utf8'));
 }
 
 export function saveTencentCredential({ secretId, secretKey } = {}) {
-  const existing = existsSync(CREDENTIAL_FILE) ? loadTencentCredentials() : {};
+  const existing = loadTencentCredentials();
   const next = { ...existing };
   if (secretId) next.secretId = secretId;
   if (secretKey) next.secretKey = secretKey;
-  const encrypted = encryptJson(next);
-  mkdirSync(path.dirname(CREDENTIAL_FILE), { recursive: true });
-  writeFileSync(CREDENTIAL_FILE, `${encrypted}\n`, { mode: 0o600 });
+  encryptJsonToFile(TENCENT_FILE, next);
   return {
     secretIdStored: Boolean(next.secretId),
     secretKeyStored: Boolean(next.secretKey),
@@ -85,17 +109,7 @@ export function saveTencentCredential({ secretId, secretKey } = {}) {
 }
 
 export function loadTencentCredentials() {
-  if (!existsSync(CREDENTIAL_FILE)) {
-    return {};
-  }
-  try {
-    const raw = readFileSync(CREDENTIAL_FILE, 'utf8').trim();
-    return decryptJson(raw);
-  } catch (err) {
-    // 解密失败时不抛给调用方，避免服务因凭据文件损坏而不可用
-    console.error('[tencentCredentialStore] 凭据解密失败，请检查 TENCENT_CREDENTIALS_KEY 或本地密钥文件。');
-    return {};
-  }
+  return decryptJsonFromFile(TENCENT_FILE);
 }
 
 export function validateSecretId(secretId) {

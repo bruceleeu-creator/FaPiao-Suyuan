@@ -30,6 +30,7 @@
 | 长条卡片拉长完整显示文字 | 通过 | 维度与闸门长条卡片由两列改为单列全宽（每行一张，长度拉满），移除名称/金额/说明的省略号截断，全部文字完整显示；卡片内部三段式比例调整（名称列 1.2fr / 说明列 1fr / CTA 固定），间距加大（space-5）；月份趋势卡片同步加宽至 minmax 260px 避免金额截断。 |
 | 账户系统与数据隔离 | 通过 | 注册/登录/登出（scrypt 密码哈希 + HMAC-SHA256 无状态令牌 7 天有效，`server/data/users.json` 存储）；`/api/auth/register\|login\|me` 三接口并入 8787 代理后端；前端登录页 `/login` + 路由守卫 + 侧边栏当前账户与退出登录；localStore 读写统一按账户命名空间（`invoice_evidence_u{用户ID}__*`）隔离发票案例/阈值/接口配置；验证：368 前端用例 + 56 项后端冒烟（含账户段）全部通过；顺带修复冒烟脚本 callEndpoint 未发送 body、中文路径下 tencentProxyServer 直接运行检测失配两处存量问题。 |
 | 公网部署（腾讯云 49.232.160.7:8083） | 通过 | OCR/验真/DeepSeek 五个密钥消耗接口加 Bearer 令牌鉴权（前端 4 个调用点带 Authorization，未登录 401 回退模拟模式）；新增 `server/start.mjs` 作为 pm2 入口（pm2 fork 下 import.meta 直接运行检测不命中）；CORS 白名单支持 `EXTRA_ALLOWED_ORIGIN` 环境变量；nginx 8083 vhost（静态 + /api/ 反代内网 8787，client_max_body_size 25m，proxy_read_timeout 120s）；服务器全链路验证通过（注册/重复注册 409/登录/带令牌 200/me 校验），冒烟 59 项；账户数据每日 3 点 crontab 备份至 /www/backup（留 7 份）；外网放行 8083 需腾讯云控制台防火墙操作。 |
+| 管理员密钥配置界面 | 通过 | 第一个注册账户自动成为管理员（存量库自愈最早注册者补 admin），令牌携带 role；管理员专属 `/api/admin/keys/status\|deepseek\|tencent`；DeepSeek Key 新增 AES-256-GCM 加密存储（apiKeyStore.mjs），与腾讯云凭据同体系（CREDENTIAL_DATA_DIR 可覆盖）；读取优先级改为 加密存储 > .env，保存即生效无需重启；设置页新增 AdminKeysPanel（密钥输入不回显、状态只显示布尔/掩码，普通用户仅见说明卡）；验证：370 前端用例 + 73 项后端冒烟（含非管理员 403、非法格式 400、保存后状态翻转）全部通过。 |
 
 ## 最近验证口径
 

@@ -67,6 +67,16 @@ describe('parseStoredAuth', () => {
     expect(parseStoredAuth(raw)).toEqual(userA);
   });
 
+  it('保留管理员角色字段', () => {
+    const admin = { ...userA, role: 'admin' as const };
+    expect(parseStoredAuth(JSON.stringify({ user: admin }))?.role).toBe('admin');
+  });
+
+  it('缺省角色视为普通用户（向后兼容旧登录态）', () => {
+    const stored = parseStoredAuth(JSON.stringify({ user: userA }));
+    expect(stored?.role).toBeUndefined();
+  });
+
   it('null / 空字符串返回 null', () => {
     expect(parseStoredAuth(null)).toBeNull();
     expect(parseStoredAuth('')).toBeNull();

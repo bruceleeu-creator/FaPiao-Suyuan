@@ -11,6 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
+import { loadDeepSeekCredentials } from './apiKeyStore.mjs';
 
 // 启动时加载项目根目录 .env（若存在），仅填充未设置的环境变量
 // 避免引入 dotenv 依赖；.env 不入库，仅本地使用
@@ -44,9 +45,12 @@ export const DEEPSEEK_API_BASE = 'https://api.deepseek.com';
 export const DEEPSEEK_DEFAULT_MODEL = 'deepseek-v4-flash';
 
 // 获取 DeepSeek 密钥与模型（仅后端内部使用）
+// 优先级：管理页加密存储（server/.deepseek-credentials.enc）> .env 环境变量
+// 管理页保存后立即生效，无需重启
 export function getEffectiveDeepSeekConfig() {
-  const apiKey = process.env.DEEPSEEK_API_KEY || '';
-  const model = process.env.DEEPSEEK_MODEL || DEEPSEEK_DEFAULT_MODEL;
+  const stored = loadDeepSeekCredentials();
+  const apiKey = stored.apiKey || process.env.DEEPSEEK_API_KEY || '';
+  const model = stored.model || process.env.DEEPSEEK_MODEL || DEEPSEEK_DEFAULT_MODEL;
   return { apiKey, model, configured: apiKey.length > 0 };
 }
 

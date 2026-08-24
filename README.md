@@ -69,6 +69,7 @@ npm run dev           # 终端 2：前端 Vite
 - 未登录访问任何页面都会被重定向到 `/login`；侧边栏底部显示当前账户并提供「退出登录」。
 - **数据按账户隔离**：每个账户的发票案例、规则阈值、接口配置存放在独立的 localStorage 命名空间（`invoice_evidence_u{用户ID}__*`），不同账户在同一浏览器中互不可见；演示样例仍为全局只读。
 - 密码使用 scrypt + 随机盐加密存储于 `server/data/users.json`（不存明文）；登录令牌为 HMAC-SHA256 无状态签名，有效期 7 天，后端重启不掉线。
+- **管理员**：第一个注册的账户自动成为管理员（侧边栏有「管理员」徽标）——只有管理员能在「接口配置」页配置 DeepSeek / 腾讯云密钥（AES-256-GCM 加密存储在服务器，保存即生效、全局可用、页面永不回显密钥值）。
 - 账户接口：`POST /api/auth/register`（注册即登录）、`POST /api/auth/login`、`POST /api/auth/me`（刷新页面后校验令牌恢复会话）。账户数据存放位置可用环境变量 `AUTH_DATA_DIR` 覆盖。
 
 ## 3. 功能模块（页面导航）
@@ -210,7 +211,7 @@ zip -r 发票溯源证据链系统.zip . \
 - 服务器路径：后端 `/www/wwwroot/invoice-evidence/server`（入口 `start.mjs`），前端 `/www/wwwroot/invoice-evidence-web`，nginx vhost `/www/server/panel/vhost/nginx/invoice-evidence-web.conf`
 - 账户数据：`server/data/users.json`，每日 3 点自动备份至 `/www/backup`（保留 7 份）；业务数据在各用户浏览器 localStorage（按账户命名空间隔离，不上传服务器）
 - 更新发布：**CI/CD 自动部署**——推送到 GitHub main 分支即自动执行（验证→构建→上传→pm2 重启→健康检查，约 3 分钟），见 `.github/workflows/deploy.yml` 与仓库 Actions 页；也可在 Actions 页手动触发（Run workflow）。部署密钥存仓库 Secrets，账户数据 server/data 永不被部署覆盖
-- 上线密钥（可选）：在服务器 `server/` 下建 `.env` 填入 `TENCENT_CLOUD_SECRET_ID/KEY`、`DEEPSEEK_API_KEY` 后 `pm2 restart`，即可启用真实 OCR 与 DeepSeek（缺失时自动模拟模式）
+- 上线密钥（推荐网页方式）：管理员登录 →「接口配置」页直接填写 DeepSeek API Key 与腾讯云 SecretId/SecretKey，保存即生效（无需重启）。备选：服务器 `server/.env` 填入同名变量（优先级低于网页配置）。
 
 ## 10. 产品边界与一期范围
 

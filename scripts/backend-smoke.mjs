@@ -19,6 +19,8 @@ const results = [];
 
 // 冒烟用登录令牌：OCR/DeepSeek 等受保护接口需要 Authorization 头
 let smokeToken = '';
+// 段 7 注册的普通用户名：段 8 用于验证非管理员 403
+let normalUsername = '';
 
 function assert(name, condition, detail = '') {
   results.push({ name, ok: !!condition, detail });
@@ -78,7 +80,7 @@ async function runSmokeTests() {
   console.log('');
 
   // 1. GET /health
-  console.log('[1/7] GET /health');
+  console.log('[1/8] GET /health');
   {
     const res = await callEndpoint('GET', '/health');
     assert('状态码 200', res.status === 200, `实际: ${res.status}`);
@@ -92,7 +94,7 @@ async function runSmokeTests() {
   console.log('');
 
   // 2. POST /api/tencent/ocr/invoice
-  console.log('[2/7] POST /api/tencent/ocr/invoice');
+  console.log('[2/8] POST /api/tencent/ocr/invoice');
   {
     // 鉴权负例：不带令牌调用受保护接口应 401
     const noAuth = await fetch(`http://${DEFAULT_HOST}:${resolveBackendPort()}/api/tencent/ocr/invoice`, {
@@ -119,7 +121,7 @@ async function runSmokeTests() {
   console.log('');
 
   // 3. POST /api/tencent/invoice/verify
-  console.log('[3/7] POST /api/tencent/invoice/verify');
+  console.log('[3/8] POST /api/tencent/invoice/verify');
   {
     const res = await callEndpoint('POST', '/api/tencent/invoice/verify', {
       invoiceNumber: '10012001',
@@ -139,7 +141,7 @@ async function runSmokeTests() {
   console.log('');
 
   // 4. 错误场景：不存在的路径
-  console.log('[4/7] GET /nonexistent（应返回 404）');
+  console.log('[4/8] GET /nonexistent（应返回 404）');
   {
     const res = await callEndpoint('GET', '/nonexistent');
     assert('状态码 404', res.status === 404, `实际: ${res.status}`);
@@ -150,7 +152,7 @@ async function runSmokeTests() {
   console.log('');
 
   // 5. 错误场景：方法不对
-  console.log('[5/7] DELETE /health（应返回 405）');
+  console.log('[5/8] DELETE /health（应返回 405）');
   {
     const res = await callEndpoint('DELETE', '/health');
     assert('状态码 405', res.status === 405, `实际: ${res.status}`);
@@ -161,7 +163,7 @@ async function runSmokeTests() {
   console.log('');
 
   // 6. 错误场景：非法 JSON
-  console.log('[6/7] POST /api/tencent/ocr/invoice 非法 JSON');
+  console.log('[6/8] POST /api/tencent/ocr/invoice 非法 JSON');
   {
     const port = resolveBackendPort();
     const url = `http://${DEFAULT_HOST}:${port}/api/tencent/ocr/invoice`;
@@ -185,9 +187,10 @@ async function runSmokeTests() {
   console.log('');
 
   // 7. 账户系统：注册/登录/令牌校验（使用临时 AUTH_DATA_DIR，不触碰真实用户数据）
-  console.log('[7/7] 账户系统 /api/auth/*');
+  console.log('[7/8] 账户系统 /api/auth/*');
   {
     const username = `smoke_${Date.now().toString(36)}`;
+    normalUsername = username;
     const password = 'smoke-pass-123';
 
     const reg = await callEndpoint('POST', '/api/auth/register', { username, password });
@@ -226,6 +229,62 @@ async function runSmokeTests() {
 
     const noToken = await callEndpoint('POST', '/api/auth/me', {});
     assert('缺少令牌返回 401', noToken.status === 401, `实际: ${noToken.status}`);
+
+    // 角色断言：本段用户晚于段 0 的冒烟账户注册，应为普通用户
+    assert('第二个注册的用户角色为 user', reg.json?.data?.role === 'user', `实际: ${reg.json?.data?.role}`);
+  }
+  console.log('');
+
+  // 8. 管理员密钥配置接口（段 0 的冒烟账户是临时库的第一个用户 = 管理员）
+  console.log('[8/8] 管理员密钥配置 /api/admin/keys/*');
+  {
+    const port = resolveBackendPort();
+    const base = `http://${DEFAULT_HOST}:${port}`;
+
+    // 无令牌 → 401
+    const noAuth = await fetch(`${base}/api/admin/keys/status`);
+    assert('密钥状态无令牌返回 401', noAuth.status === 401, `实际: ${noAuth.status}`);
+
+    // 普通用户（段 7 注册的 smoke 账户）→ 403
+    const normalLogin = await callEndpoint('POST', '/api/auth/login', {
+      username: normalUsername,
+      password: 'smoke-pass-123',
+    });
+    const normalRes = await fetch(`${base}/api/admin/keys/status`, {
+      headers: { Authorization: `Bearer ${normalLogin.json?.data?.token}` },
+    });
+    assert('普通用户访问密钥接口返回 403', normalRes.status === 403, `实际: ${normalRes.status}`);
+
+    // 管理员（smokeToken）→ 200，初始未配置
+    const status1 = await callEndpoint('GET', '/api/admin/keys/status');
+    assert('管理员读取状态返回 200', status1.status === 200, `实际: ${status1.status}`);
+    assert('初始 DeepSeek 未配置', status1.json?.data?.deepseek?.configured === false);
+    assert('初始腾讯云未配置', status1.json?.data?.tencent?.configured === false);
+
+    // 非法 DeepSeek Key → 400
+    const badKey = await callEndpoint('POST', '/api/admin/keys/deepseek', { apiKey: 'not-a-valid-key' });
+    assert('非法 DeepSeek Key 返回 400', badKey.status === 400, `实际: ${badKey.status}`);
+
+    // 合法形态假 Key → 200 且状态翻转（假输入仅验证链路，存于临时目录）
+    const fakeDeepseek = `sk-${'a'.repeat(24)}`;
+    const saveDs = await callEndpoint('POST', '/api/admin/keys/deepseek', { apiKey: fakeDeepseek, model: 'deepseek-v4-flash' });
+    assert('保存 DeepSeek 密钥返回 200', saveDs.status === 200, `实际: ${saveDs.status}`);
+    assert('保存后不回显密钥值', saveDs.json?.data?.apiKeyStored === true && saveDs.json?.data?.apiKeyValid === true);
+
+    // 非法腾讯云 SecretId → 400
+    const badTencent = await callEndpoint('POST', '/api/admin/keys/tencent', { secretId: 'BAD', secretKey: 'BAD' });
+    assert('非法腾讯云密钥返回 400', badTencent.status === 400, `实际: ${badTencent.status}`);
+
+    // 合法形态假密钥 → 200，状态翻转且只返回掩码
+    const saveTc = await callEndpoint('POST', '/api/admin/keys/tencent', {
+      secretId: `AKID${'b'.repeat(32)}`,
+      secretKey: 'c'.repeat(32),
+    });
+    assert('保存腾讯云密钥返回 200', saveTc.status === 200, `实际: ${saveTc.status}`);
+    const status2 = await callEndpoint('GET', '/api/admin/keys/status');
+    assert('保存后 DeepSeek 已配置', status2.json?.data?.deepseek?.configured === true);
+    assert('保存后腾讯云已配置', status2.json?.data?.tencent?.configured === true);
+    assert('腾讯云状态只返回掩码', typeof status2.json?.data?.tencent?.secretIdMasked === 'string' && status2.json.data.tencent.secretIdMasked.includes('****'));
   }
   console.log('');
 
@@ -250,6 +309,9 @@ async function main() {
   // 账户数据指向临时目录：冒烟测试的注册/登录绝不写入真实 server/data/users.json
   const authDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'invoice-auth-smoke-'));
   process.env.AUTH_DATA_DIR = authDataDir;
+  // 密钥加密存储同样指向临时目录：管理员密钥接口测试不污染 server/ 下的真实凭据文件
+  const credDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'invoice-cred-smoke-'));
+  process.env.CREDENTIAL_DATA_DIR = credDataDir;
 
   const port = resolveBackendPort();
   const server = createServer();
@@ -270,11 +332,13 @@ async function main() {
     server.close();
     // 给 server.close 一点时间完成关闭
     await new Promise((resolve) => setTimeout(resolve, 200));
-    // 清理临时账户数据目录
-    try {
-      fs.rmSync(authDataDir, { recursive: true, force: true });
-    } catch {
-      // 清理失败不影响结果
+    // 清理临时账户/凭据数据目录
+    for (const dir of [authDataDir, credDataDir]) {
+      try {
+        fs.rmSync(dir, { recursive: true, force: true });
+      } catch {
+        // 清理失败不影响结果
+      }
     }
   }
 }

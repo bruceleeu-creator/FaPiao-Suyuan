@@ -34,6 +34,18 @@ import { recognizeVatInvoice } from './tencentOcrClient.mjs';
 import { checkDeepSeekConfigured } from './deepseekConfig.mjs';
 import { interpretInvoiceFields, generateInvoiceQuestions, assessInvoiceRisk } from './deepseekClient.mjs';
 import { registerUser, verifyCredential, issueToken, verifyToken } from './authStore.mjs';
+import {
+  saveDeepSeekCredential,
+  getDeepSeekCredentialStatus,
+  validateDeepSeekKey,
+  validateDeepSeekModel,
+} from './apiKeyStore.mjs';
+import {
+  saveTencentCredential,
+  getTencentCredentialStatus,
+  validateSecretId,
+  validateSecretKey,
+} from './tencentCredentialStore.mjs';
 
 // 安全日志：只输出非敏感信息
 // 不输出请求体原文（可能含敏感字段）、不输出密钥值、不输出完整 headers
@@ -81,6 +93,43 @@ function requireApiToken(req, res, corsOrigin, pathname) {
   logRequest(req.method, pathname, 401, traceId);
   sendJson(res, 401, payload, corsOrigin);
   return false;
+}
+
+// 管理员接口鉴权：需登录且角色为 admin（第一个注册的账户）
+// 未登录/令牌无效返回 401；已登录非管理员返回 403
+function requireAdminToken(req, res, corsOrigin, pathname) {
+  const header = req.headers.authorization || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
+  const result = verifyToken(token);
+  if (!result.ok) {
+    const traceId = generateTraceId();
+    const payload = {
+      ok: false,
+      service: 'auth',
+      status: 'error',
+      message: result.message || '请先登录。',
+      traceId,
+      timestamp: new Date().toISOString(),
+    };
+    logRequest(req.method, pathname, 401, traceId);
+    sendJson(res, 401, payload, corsOrigin);
+    return null;
+  }
+  if (result.user.role !== 'admin') {
+    const traceId = generateTraceId();
+    const payload = {
+      ok: false,
+      service: 'auth',
+      status: 'error',
+      message: '该操作需要管理员权限（第一个注册的账户）。',
+      traceId,
+      timestamp: new Date().toISOString(),
+    };
+    logRequest(req.method, pathname, 403, traceId);
+    sendJson(res, 403, payload, corsOrigin);
+    return null;
+  }
+  return result.user;
 }
 
 // 解析请求 body 为 JSON
@@ -198,7 +247,7 @@ async function handleRequest(req, res) {
         ok: true,
         service: 'auth',
         status: 'success',
-        data: { token, userId: result.user.id, username: result.user.username, expiresAt },
+        data: { token, userId: result.user.id, username: result.user.username, role: result.user.role === 'admin' ? 'admin' : 'user', expiresAt },
         traceId,
         timestamp: new Date().toISOString(),
       };
@@ -220,7 +269,7 @@ async function handleRequest(req, res) {
         ok: true,
         service: 'auth',
         status: 'success',
-        data: { token, userId: user.id, username: user.username, expiresAt },
+        data: { token, userId: user.id, username: user.username, role: user.role === 'admin' ? 'admin' : 'user', expiresAt },
         traceId,
         timestamp: new Date().toISOString(),
       };
@@ -244,6 +293,7 @@ async function handleRequest(req, res) {
         data: {
           userId: result.user.id,
           username: result.user.username,
+          role: result.user.role === 'admin' ? 'admin' : 'user',
           expiresAt: result.expiresAt,
         },
         traceId,
@@ -259,7 +309,119 @@ async function handleRequest(req, res) {
     return;
   }
 
-  // 3. POST /api/tencent/ocr/invoice
+  // 3. 管理员密钥配置：GET /api/admin/keys/status | POST /api/admin/keys/deepseek | POST /api/admin/keys/tencent
+  // 网页端配置密钥（AES-256-GCM 加密落盘，保存即生效无需重启），仅第一个注册的管理员可用
+  if (pathname.startsWith('/api/admin/keys')) {
+    const traceId = generateTraceId();
+    const admin = requireAdminToken(req, res, corsOrigin, pathname);
+    if (!admin) return;
+
+    // 3.1 GET /api/admin/keys/status —— 各密钥配置状态（布尔与掩码，不含密钥值）
+    if (method === 'GET' && pathname === '/api/admin/keys/status') {
+      const deepseek = getDeepSeekCredentialStatus();
+      const tencent = getTencentCredentialStatus();
+      const payload = {
+        ok: true,
+        service: 'admin-keys',
+        status: 'success',
+        data: {
+          deepseek: { configured: deepseek.configured, model: deepseek.model },
+          tencent: { configured: tencent.configured, secretIdMasked: tencent.secretIdMasked },
+        },
+        traceId,
+        timestamp: new Date().toISOString(),
+      };
+      logRequest(method, pathname, 200, traceId);
+      sendJson(res, 200, payload, corsOrigin);
+      return;
+    }
+
+    // 3.2 POST /api/admin/keys/deepseek {apiKey, model?}
+    if (method === 'POST' && pathname === '/api/admin/keys/deepseek') {
+      const bodyResult = await parseJsonBody(req);
+      if (!bodyResult.ok) {
+        const payload = buildErrorResponse(ERROR_CODES.INVALID_JSON, bodyResult.error);
+        logRequest(method, pathname, 400, payload.traceId);
+        sendJson(res, 400, payload, corsOrigin);
+        return;
+      }
+      const { apiKey, model } = bodyResult.data || {};
+      if (!validateDeepSeekKey(apiKey)) {
+        const payload = {
+          ok: false, service: 'admin-keys', status: 'error',
+          message: 'DeepSeek API Key 格式不正确：应以 sk- 开头（在 DeepSeek 开放平台「API Keys」页获取）。',
+          traceId, timestamp: new Date().toISOString(),
+        };
+        logRequest(method, pathname, 400, traceId);
+        sendJson(res, 400, payload, corsOrigin);
+        return;
+      }
+      if (model !== undefined && model !== '' && !validateDeepSeekModel(model)) {
+        const payload = {
+          ok: false, service: 'admin-keys', status: 'error',
+          message: '模型名格式不正确（3-64 位、不含空格）。',
+          traceId, timestamp: new Date().toISOString(),
+        };
+        logRequest(method, pathname, 400, traceId);
+        sendJson(res, 400, payload, corsOrigin);
+        return;
+      }
+      saveDeepSeekCredential({ apiKey, model });
+      const payload = {
+        ok: true, service: 'admin-keys', status: 'success',
+        data: getDeepSeekCredentialStatus(),
+        message: 'DeepSeek 密钥已保存（加密存储），立即生效。',
+        traceId, timestamp: new Date().toISOString(),
+      };
+      logRequest(method, pathname, 200, traceId);
+      sendJson(res, 200, payload, corsOrigin);
+      return;
+    }
+
+    // 3.3 POST /api/admin/keys/tencent {secretId, secretKey}
+    if (method === 'POST' && pathname === '/api/admin/keys/tencent') {
+      const bodyResult = await parseJsonBody(req);
+      if (!bodyResult.ok) {
+        const payload = buildErrorResponse(ERROR_CODES.INVALID_JSON, bodyResult.error);
+        logRequest(method, pathname, 400, payload.traceId);
+        sendJson(res, 400, payload, corsOrigin);
+        return;
+      }
+      const { secretId, secretKey } = bodyResult.data || {};
+      const idOk = validateSecretId(secretId);
+      const keyOk = validateSecretKey(secretKey);
+      if (!idOk || !keyOk) {
+        const payload = {
+          ok: false, service: 'admin-keys', status: 'error',
+          message: !idOk
+            ? '腾讯云 SecretId 格式不正确：应以 AKID 开头共 36 位（腾讯云控制台「访问管理 → API 密钥管理」获取）。'
+            : '腾讯云 SecretKey 格式不正确：应为 32 位字母数字。',
+          traceId, timestamp: new Date().toISOString(),
+        };
+        logRequest(method, pathname, 400, traceId);
+        sendJson(res, 400, payload, corsOrigin);
+        return;
+      }
+      saveTencentCredential({ secretId, secretKey });
+      const payload = {
+        ok: true, service: 'admin-keys', status: 'success',
+        data: getTencentCredentialStatus(),
+        message: '腾讯云密钥已保存（加密存储），立即生效。',
+        traceId, timestamp: new Date().toISOString(),
+      };
+      logRequest(method, pathname, 200, traceId);
+      sendJson(res, 200, payload, corsOrigin);
+      return;
+    }
+
+    // /api/admin/keys 下其他路径或方法
+    const payload = buildErrorResponse(ERROR_CODES.NOT_FOUND, `路径 ${pathname} 不存在。`);
+    logRequest(method, pathname, 404, payload.traceId);
+    sendJson(res, 404, payload, corsOrigin);
+    return;
+  }
+
+  // 4. POST /api/tencent/ocr/invoice
   if (method === 'POST' && pathname === '/api/tencent/ocr/invoice') {
       const bodyResult = await parseJsonBody(req);
       if (!bodyResult.ok) {
@@ -432,6 +594,9 @@ async function handleRequest(req, res) {
     '/api/auth/register',
     '/api/auth/login',
     '/api/auth/me',
+    '/api/admin/keys/status',
+    '/api/admin/keys/deepseek',
+    '/api/admin/keys/tencent',
     '/api/tencent/ocr/invoice',
     '/api/tencent/invoice/verify',
     '/api/deepseek/interpret',

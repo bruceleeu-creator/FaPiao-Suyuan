@@ -31,7 +31,7 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 
 interface AuthApiResponse {
   ok?: boolean;
-  data?: { token: string; userId: string; username: string; expiresAt?: number };
+  data?: { token: string; userId: string; username: string; role?: 'admin' | 'user'; expiresAt?: number };
   message?: string;
 }
 
@@ -60,8 +60,8 @@ async function callAuthApi(path: string, body: Record<string, string>): Promise<
 }
 
 function toStoredUser(payload: AuthApiResponse): StoredAuthUser {
-  const { token, userId, username } = payload.data as NonNullable<AuthApiResponse['data']>;
-  return { token, userId, username, expiresAt: payload.data?.expiresAt ?? 0 };
+  const { token, userId, username, role } = payload.data as NonNullable<AuthApiResponse['data']>;
+  return { token, userId, username, role: role ?? 'user', expiresAt: payload.data?.expiresAt ?? 0 };
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {

@@ -5028,3 +5028,118 @@ dd {
   border-color: rgba(255, 180, 168, 0.4);
   background: rgba(224, 87, 72, 0.12);
 }
+
+/* ============================================
+   管理员密钥配置面板
+   ============================================ */
+
+.admin-keys-panel {
+  background: var(--c-paper);
+  border: 1px solid var(--c-line);
+  border-radius: var(--radius-lg);
+  padding: var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.admin-keys-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--c-ink);
+}
+
+.admin-keys-head strong {
+  font-size: var(--fs-15, var(--fs-14));
+}
+
+.admin-keys-refresh {
+  margin-left: auto;
+  padding: 5px 10px;
+  font-size: var(--fs-12);
+}
+
+.admin-keys-note {
+  margin: 0;
+  color: var(--c-muted);
+  font-size: var(--fs-13);
+  line-height: 1.7;
+}
+
+.admin-keys-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: var(--space-4);
+}
+
+.admin-keys-card {
+  border: 1px solid var(--c-line-2);
+  border-radius: var(--radius-md);
+  background: var(--c-paper-2);
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.admin-keys-card header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.admin-keys-card header strong {
+  font-size: var(--fs-13);
+  color: var(--c-ink-soft);
+}
+
+.key-status-pill {
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: var(--fs-12);
+  border: 1px solid var(--c-line-strong);
+  color: var(--c-muted);
+  background: var(--c-paper);
+  white-space: nowrap;
+}
+
+.key-status-pill.configured {
+  border-color: rgba(31, 106, 80, 0.35);
+  background: rgba(31, 106, 80, 0.08);
+  color: var(--c-accent, #1f6a50);
+  font-weight: var(--fw-medium);
+}
+
+.admin-keys-footnote {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  color: var(--c-muted-2);
+  font-size: var(--fs-12);
+  line-height: 1.6;
+}
+
+.admin-keys-footnote svg {
+  flex-shrink: 0;
+  margin-top: 3px;
+}
+
+.admin-keys-hint-ok {
+  border-color: rgba(31, 106, 80, 0.35);
+  background: rgba(31, 106, 80, 0.07);
+  color: var(--c-accent, #1f6a50);
+}
+
+.sidebar-admin-badge {
+  font-style: normal;
+  font-size: var(--fs-11, 11px);
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid rgba(213, 223, 217, 0.35);
+  color: var(--c-shell-text);
+  background: var(--c-shell-3);
+  white-space: nowrap;
+}

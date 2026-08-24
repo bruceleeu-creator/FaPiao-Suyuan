@@ -106,6 +106,7 @@ npm run validate      # 一键全验证
 - 路由守卫：`App.tsx` 的 AuthGate——未登录重定向 /login；登录后 `<AuthenticatedApp key={userId}>` 整树重建，切换账户零残留。
 - 登录态自举 key `invoice_evidence_auth` 绝不参与命名空间变换（否则死循环）。
 - 侧边栏底部显示当前账户 + 退出登录（Layout.tsx）。
+- 角色（2026-08-24）：第一个注册用户 role=admin（存量库自愈：无管理员时最早注册者补为 admin），令牌带 role；管理员专属 `/api/admin/keys/status|deepseek|tencent`（GET 状态/POST 保存，requireAdminToken 401/403）；密钥 AES-256-GCM 加密存 `server/.deepseek-credentials.enc` 与 `.tencent-credentials.enc`（CREDENTIAL_DATA_DIR 可覆盖），读取优先级：加密存储 > .env，保存即生效；前端 AdminKeysPanel.tsx（设置页顶部，普通用户只见说明），密钥值永不回显（状态只返回布尔/掩码）。
 
 ### 4.6 公网部署（2026-08-24 上线）
 

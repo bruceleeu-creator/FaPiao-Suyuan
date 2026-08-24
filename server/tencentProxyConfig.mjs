@@ -44,18 +44,19 @@ export function resolveBackendPort() {
 }
 
 // 获取当前生效的腾讯云密钥（仅后端内部使用）
-// 优先级：环境变量 > 本地加密存储
+// 优先级：管理页加密存储（server/.tencent-credentials.enc）> 环境变量
+// 管理页保存后立即生效，无需重启
 // 不打印、不输出到响应体
 export function getEffectiveTencentCredentials() {
+  const stored = loadTencentCredentials();
+  if (validateSecretId(stored.secretId) && validateSecretKey(stored.secretKey)) {
+    return { secretId: stored.secretId, secretKey: stored.secretKey, source: 'encrypted-store' };
+  }
+
   const envSecretId = process.env.TENCENT_CLOUD_SECRET_ID;
   const envSecretKey = process.env.TENCENT_CLOUD_SECRET_KEY;
   if (validateSecretId(envSecretId) && validateSecretKey(envSecretKey)) {
     return { secretId: envSecretId, secretKey: envSecretKey, source: 'env' };
-  }
-
-  const stored = loadTencentCredentials();
-  if (validateSecretId(stored.secretId) && validateSecretKey(stored.secretKey)) {
-    return { secretId: stored.secretId, secretKey: stored.secretKey, source: 'encrypted-store' };
   }
 
   return { secretId: '', secretKey: '', source: 'none' };

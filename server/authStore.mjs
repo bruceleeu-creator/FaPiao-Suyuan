@@ -38,7 +38,14 @@ function loadUsersDb() {
   if (!fs.existsSync(file)) return { users: [] };
   try {
     const parsed = JSON.parse(fs.readFileSync(file, 'utf-8'));
-    if (parsed && Array.isArray(parsed.users)) return parsed;
+    if (parsed && Array.isArray(parsed.users)) {
+      // 角色自愈：历史数据（加角色字段前注册的用户）没有任何管理员时，
+      // 最早注册的用户（数组顺序即注册顺序）自动补为管理员
+      if (parsed.users.length > 0 && !parsed.users.some((u) => u.role === 'admin')) {
+        parsed.users[0].role = 'admin';
+      }
+      return parsed;
+    }
     return { users: [] };
   } catch {
     // 坏文件不致命：视为无用户，注册时会被覆盖重建
@@ -116,6 +123,8 @@ export function registerUser({ username, password }) {
     id: crypto.randomUUID(),
     username: name,
     usernameLower: lower,
+    // 第一个注册的用户自动成为管理员（可配置全局密钥），其后为普通用户
+    role: db.users.length === 0 ? 'admin' : 'user',
     salt,
     hash: hashPassword(pwdCheck.pwd, salt),
     createdAt: new Date().toISOString(),
@@ -157,10 +166,16 @@ function sign(payloadB64) {
   return crypto.createHmac('sha256', getOrCreateSecret()).update(payloadB64).digest('base64url');
 }
 
-// 签发 7 天有效期的令牌
+// 签发 7 天有效期的令牌（携带角色，管理员判定以 users.json 为准）
 export function issueToken(user) {
   const now = Date.now();
-  const payload = { uid: user.id, username: user.username, iat: now, exp: now + TOKEN_TTL_MS };
+  const payload = {
+    uid: user.id,
+    username: user.username,
+    role: user.role === 'admin' ? 'admin' : 'user',
+    iat: now,
+    exp: now + TOKEN_TTL_MS,
+  };
   const payloadB64 = Buffer.from(JSON.stringify(payload), 'utf-8').toString('base64url');
   const token = `${payloadB64}.${sign(payloadB64)}`;
   return { token, expiresAt: payload.exp };
