@@ -4,6 +4,7 @@ import { Cloud, FileText, Upload } from 'lucide-react';
 import type { IntakeForm, InvoiceCategory } from '../../domain/types';
 import { mockOcrRecognize } from '../../ai/mockOcrService';
 import { authHeaders } from '../../auth/authStorage';
+import { useAuth } from '../../auth/AuthContext';
 import { classifyCategoryByRules } from '../../ai/categoryRules';
 import { interpretInvoiceViaDeepSeek, type DeepSeekOcrField } from '../../ai/deepSeekInterpreter';
 import { useWorkflow } from '../../workflow/WorkflowContext';
@@ -304,6 +305,7 @@ export function mergeDeepSeekResult(
 
 export function InvoiceIntakePage() {
   const navigate = useNavigate();
+  const { user } = useAuth();
   const { startSession, cases, activeCaseId, loadCase } = useWorkflow();
   const [form, setForm] = useState<IntakeForm>(emptyForm);
   const [error, setError] = useState<string>('');
@@ -453,7 +455,7 @@ export function InvoiceIntakePage() {
         signal: AbortSignal.timeout(30000),
       });
       const text = await response.text();
-      let result: { ok?: boolean; data?: unknown; message?: string } | null = null;
+      let result: { ok?: boolean; data?: unknown; message?: string; status?: string } | null = null;
       try {
         result = text ? JSON.parse(text) : null;
       } catch {
@@ -478,9 +480,18 @@ export function InvoiceIntakePage() {
         // 异步交给 DeepSeek 识别类别并补齐缺失字段（有本地规则兜底）
         void applyAiInterpretation(result.data, mapped);
       } else {
-        // 后端可达但识别失败（如密钥无效、腾讯云服务异常）：如实提示，用户可手动补录
+        // 后端可达但识别失败：如实提示，用户可手动补录
+        // 密钥未配置时给出可操作指引，避免"上传后没反应"的困惑
+        const notConfigured = result.status === 'not_configured';
+        const guidance = notConfigured
+          ? user?.role === 'admin'
+            ? '您是管理员：请在左侧「接口配置」页填写腾讯云 SecretId/SecretKey（可用「测试连接」验证），保存后重新上传即可自动识别。'
+            : '请联系管理员在「接口配置」页配置腾讯云密钥后再上传；目前可先手动填写下方表单提交。'
+          : '';
         setOcrStatus('error');
-        setOcrError(result.message || '腾讯云 OCR 识别失败，请手动录入。');
+        setOcrError(
+          `${result.message || '腾讯云 OCR 识别失败，请手动录入。'}${guidance ? ` ${guidance}` : ''}`,
+        );
         setFilledHint('');
       }
     } catch (err) {

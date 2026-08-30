@@ -7,13 +7,19 @@
 //   - 仅第一个注册的账户（管理员）可见可操作；普通用户显示说明卡片
 
 import { useCallback, useEffect, useState } from 'react';
-import { KeyRound, Lock, RefreshCw, Save, ShieldCheck } from 'lucide-react';
+import { KeyRound, Lock, RefreshCw, Save, ShieldCheck, Zap } from 'lucide-react';
 import { useAuth } from '../../auth/AuthContext';
 import { authHeaders } from '../../auth/authStorage';
 
 interface KeysStatus {
   deepseek: { configured: boolean; model: string | null };
   tencent: { configured: boolean; secretIdMasked: string | null };
+}
+
+// 测试连接结果：ok 为 null 表示尚未测试
+interface TestResult {
+  ok: boolean | null;
+  message: string;
 }
 
 export function AdminKeysPanel() {
@@ -30,6 +36,12 @@ export function AdminKeysPanel() {
   const [tencentId, setTencentId] = useState('');
   const [tencentKey, setTencentKey] = useState('');
   const [savingTencent, setSavingTencent] = useState(false);
+
+  // 密钥真实连通性测试（后端发起最小真实请求，区分"格式合法"与"真实可用"）
+  const [testingDeepseek, setTestingDeepseek] = useState(false);
+  const [deepseekTest, setDeepseekTest] = useState<TestResult>({ ok: null, message: '' });
+  const [testingTencent, setTestingTencent] = useState(false);
+  const [tencentTest, setTencentTest] = useState<TestResult>({ ok: null, message: '' });
 
   const [hint, setHint] = useState('');
   const [hintError, setHintError] = useState(false);
@@ -123,6 +135,36 @@ export function AdminKeysPanel() {
     }
   };
 
+  // 发起密钥连通性测试：后端用当前生效密钥发一次最小真实请求
+  const runKeyTest = async (
+    path: 'deepseek' | 'tencent',
+    setTesting: (v: boolean) => void,
+    setResult: (r: TestResult) => void,
+  ) => {
+    setTesting(true);
+    setResult({ ok: null, message: '正在测试…' });
+    try {
+      const response = await fetch(`/api/admin/keys/${path}/test`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({}),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (response.status === 401 || response.status === 403) {
+        setResult({ ok: false, message: payload?.message || '无权限执行该测试（需管理员登录）。' });
+      } else {
+        setResult({
+          ok: payload?.ok === true,
+          message: payload?.message || payload?.data?.message || '测试完成。',
+        });
+      }
+    } catch {
+      setResult({ ok: false, message: '网络错误：无法连接后端服务。' });
+    } finally {
+      setTesting(false);
+    }
+  };
+
   if (!isAdmin) {
     return (
       <section className="admin-keys-panel" aria-label="密钥配置（仅管理员）">
@@ -187,15 +229,31 @@ export function AdminKeysPanel() {
               autoComplete="off"
             />
           </label>
-          <button
-            type="button"
-            className="primary-button"
-            onClick={() => void handleSaveDeepseek()}
-            disabled={savingDeepseek || !deepseekKey.trim()}
-          >
-            <Save size={14} aria-hidden="true" />
-            {savingDeepseek ? '保存中…' : '保存 DeepSeek 密钥'}
-          </button>
+          <div className="admin-keys-actions">
+            <button
+              type="button"
+              className="primary-button"
+              onClick={() => void handleSaveDeepseek()}
+              disabled={savingDeepseek || !deepseekKey.trim()}
+            >
+              <Save size={14} aria-hidden="true" />
+              {savingDeepseek ? '保存中…' : '保存 DeepSeek 密钥'}
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() => void runKeyTest('deepseek', setTestingDeepseek, setDeepseekTest)}
+              disabled={testingDeepseek}
+            >
+              <Zap size={14} aria-hidden="true" />
+              {testingDeepseek ? '测试中…' : '测试连接'}
+            </button>
+          </div>
+          {deepseekTest.message && (
+            <p className={`key-test-result ${deepseekTest.ok === null ? '' : deepseekTest.ok ? 'key-test-ok' : 'key-test-fail'}`} role="status">
+              {deepseekTest.message}
+            </p>
+          )}
         </div>
 
         <div className="admin-keys-card">
@@ -229,15 +287,31 @@ export function AdminKeysPanel() {
               autoComplete="off"
             />
           </label>
-          <button
-            type="button"
-            className="primary-button"
-            onClick={() => void handleSaveTencent()}
-            disabled={savingTencent || !tencentId.trim() || !tencentKey.trim()}
-          >
-            <Save size={14} aria-hidden="true" />
-            {savingTencent ? '保存中…' : '保存腾讯云密钥'}
-          </button>
+          <div className="admin-keys-actions">
+            <button
+              type="button"
+              className="primary-button"
+              onClick={() => void handleSaveTencent()}
+              disabled={savingTencent || !tencentId.trim() || !tencentKey.trim()}
+            >
+              <Save size={14} aria-hidden="true" />
+              {savingTencent ? '保存中…' : '保存腾讯云密钥'}
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() => void runKeyTest('tencent', setTestingTencent, setTencentTest)}
+              disabled={testingTencent}
+            >
+              <Zap size={14} aria-hidden="true" />
+              {testingTencent ? '测试中…' : '测试连接'}
+            </button>
+          </div>
+          {tencentTest.message && (
+            <p className={`key-test-result ${tencentTest.ok === null ? '' : tencentTest.ok ? 'key-test-ok' : 'key-test-fail'}`} role="status">
+              {tencentTest.message}
+            </p>
+          )}
         </div>
       </div>
 

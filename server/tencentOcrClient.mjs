@@ -20,6 +20,11 @@ const OCR_VERSION = '2018-11-19';
 const OCR_ACTION = 'VatInvoiceOCR';
 const DEFAULT_REGION = process.env.TENCENT_CLOUD_REGION || 'ap-guangzhou';
 
+// 超时保护：真实调用挂起（网络不通、连接半开）时主动中断，
+// 避免后端请求无限等待导致"导入卡住"（前端 30s 兜底之外的服务端兜底）
+const OCR_TIMEOUT_MS = 20000;
+const OCR_TIMEOUT_MARK = 'OCR_REQUEST_TIMEOUT';
+
 function sha256Hex(data) {
   return createHash('sha256').update(data).digest('hex');
 }
@@ -84,6 +89,14 @@ function requestOcr(payload) {
   };
 
   return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(hardTimer);
+      fn(value);
+    };
+
     const req = https.request({
       hostname: OCR_HOST,
       path: '/',
@@ -100,17 +113,40 @@ function requestOcr(payload) {
         } catch {
           json = null;
         }
-        resolve({ statusCode: res.statusCode, json, raw });
+        finish(resolve, { statusCode: res.statusCode, json, raw });
       });
     });
 
+    // 超时保护：socket 空闲超时 + 总时长硬超时，任一触发都销毁请求并拒绝
+    const hardTimer = setTimeout(() => {
+      req.destroy(new Error(`${OCR_TIMEOUT_MARK}: 超时（${OCR_TIMEOUT_MS}ms）`));
+    }, OCR_TIMEOUT_MS);
+    req.setTimeout(OCR_TIMEOUT_MS, () => {
+      req.destroy(new Error(`${OCR_TIMEOUT_MARK}: 响应超时（${OCR_TIMEOUT_MS}ms）`));
+    });
+
     req.on('error', (err) => {
-      reject(err);
+      finish(reject, err);
     });
 
     req.write(body);
     req.end();
   });
+}
+
+// 判定腾讯云 OCR 响应是否真实成功（纯函数，供冒烟测试回归）
+// 腾讯云 API 约定：业务/鉴权错误也可能以 HTTP 200 返回，错误在 Response.Error 里
+// （实测 AuthFailure.SecretIdNotFound 即为 200 + Error），
+// 必须检查 Error 字段，否则密钥错误会被误判为"识别成功"，前端拿到空数据表现为"导入无反应"
+export function classifyOcrApiResponse(statusCode, json) {
+  const apiError = json?.Response?.Error;
+  if (statusCode === 200 && json?.Response && !apiError) {
+    return { ok: true };
+  }
+  return {
+    ok: false,
+    message: apiError?.Message || apiError?.Code || `腾讯云 OCR 调用失败（HTTP ${statusCode}）。`,
+  };
 }
 
 // 识别增值税发票
@@ -143,7 +179,8 @@ export async function recognizeVatInvoice({ imageBase64, imageUrl, isPdf, pdfPag
 
   try {
     const response = await requestOcr(payload);
-    if (response.statusCode === 200 && response.json?.Response) {
+    const classified = classifyOcrApiResponse(response.statusCode, response.json);
+    if (classified.ok) {
       return {
         ok: true,
         status: 'success',
@@ -155,14 +192,73 @@ export async function recognizeVatInvoice({ imageBase64, imageUrl, isPdf, pdfPag
       ok: false,
       status: 'failed',
       statusCode: response.statusCode,
-      message: response.json?.Response?.Error?.Message || response.json?.Response?.Error?.Code || '腾讯云 OCR 调用失败。',
+      message: classified.message,
       raw: response.json,
     };
   } catch (err) {
+    if (err?.message?.startsWith(OCR_TIMEOUT_MARK)) {
+      return {
+        ok: false,
+        status: 'timeout',
+        message: `腾讯云 OCR 请求超时（${OCR_TIMEOUT_MS / 1000} 秒），已中断。请检查服务器网络后重试。`,
+      };
+    }
     return {
       ok: false,
       status: 'error',
       message: `腾讯云 OCR 请求异常：${err.message}`,
     };
   }
+}
+
+// ============ 管理员密钥连通性测试 ============
+// 用 1x1 像素 PNG 发起一次真实 VatInvoiceOCR 调用：
+// - 能通过腾讯云鉴权（即使因图片太小返回业务错误）即说明 SecretId/SecretKey 有效
+// - AuthFailure 系错误码说明密钥错误/被禁用
+// - 超时/网络异常说明服务器到腾讯云不通
+const TINY_PNG_BASE64 =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+
+export async function testTencentOcrCredentials() {
+  const creds = getEffectiveTencentCredentials();
+  if (creds.source === 'none') {
+    return {
+      ok: false,
+      status: 'not_configured',
+      message: '尚未保存腾讯云密钥，请先填写 SecretId/SecretKey 并保存。',
+    };
+  }
+
+  const result = await recognizeVatInvoice({ imageBase64: TINY_PNG_BASE64 });
+  if (result.ok) {
+    return { ok: true, status: 'success', message: '腾讯云密钥有效，OCR 调用成功。' };
+  }
+
+  const errorCode = result.raw?.Response?.Error?.Code || '';
+  const authRejected =
+    errorCode.startsWith('AuthFailure') ||
+    errorCode.startsWith('InvalidCredential') ||
+    result.statusCode === 401 ||
+    result.statusCode === 403;
+  if (authRejected) {
+    return {
+      ok: false,
+      status: 'auth_failed',
+      message: `腾讯云拒绝了该密钥（${errorCode || `HTTP ${result.statusCode}`}）：请核对 SecretId/SecretKey 是否正确、是否已被禁用或删除。`,
+    };
+  }
+  if (result.status === 'timeout' || result.status === 'error') {
+    return {
+      ok: false,
+      status: result.status,
+      message: result.message,
+    };
+  }
+
+  // 非鉴权类业务错误（如 1x1 图片无法识别出票面）：说明签名与密钥已通过校验
+  return {
+    ok: true,
+    status: 'success',
+    message: `密钥有效（腾讯云已通过鉴权并返回业务响应${errorCode ? `：${errorCode}` : ''}）。上传真实发票即可识别。`,
+  };
 }

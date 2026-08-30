@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import { createServer } from '../server/tencentProxyServer.mjs';
 import { DEFAULT_HOST, resolveBackendPort } from '../server/tencentProxyConfig.mjs';
 import { registerUser, issueToken } from '../server/authStore.mjs';
+import { classifyOcrApiResponse } from '../server/tencentOcrClient.mjs';
 
 // 测试结果收集
 const results = [];
@@ -261,6 +262,25 @@ async function runSmokeTests() {
     assert('初始 DeepSeek 未配置', status1.json?.data?.deepseek?.configured === false);
     assert('初始腾讯云未配置', status1.json?.data?.tencent?.configured === false);
 
+    // 密钥连通性测试接口：未配置时直接返回 not_configured，不发起真实外网调用
+    const dsTest = await callEndpoint('POST', '/api/admin/keys/deepseek/test', {});
+    assert('DeepSeek 测试接口（未配置）返回 200', dsTest.status === 200, `实际: ${dsTest.status}`);
+    assert('DeepSeek 测试接口返回 not_configured', dsTest.json?.data?.status === 'not_configured', `实际: ${dsTest.json?.data?.status}`);
+    assert('DeepSeek 测试接口包含 message', typeof dsTest.json?.message === 'string' && dsTest.json.message.length > 0);
+
+    const tcTest = await callEndpoint('POST', '/api/admin/keys/tencent/test', {});
+    assert('腾讯云测试接口（未配置）返回 200', tcTest.status === 200, `实际: ${tcTest.status}`);
+    assert('腾讯云测试接口返回 not_configured', tcTest.json?.data?.status === 'not_configured', `实际: ${tcTest.json?.data?.status}`);
+    assert('腾讯云测试接口包含 message', typeof tcTest.json?.message === 'string' && tcTest.json.message.length > 0);
+
+    // 普通用户调用测试接口 → 403
+    const normalTest = await fetch(`${base}/api/admin/keys/deepseek/test`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${normalLogin.json?.data?.token}` },
+      body: '{}',
+    });
+    assert('普通用户调用测试接口返回 403', normalTest.status === 403, `实际: ${normalTest.status}`);
+
     // 非法 DeepSeek Key → 400
     const badKey = await callEndpoint('POST', '/api/admin/keys/deepseek', { apiKey: 'not-a-valid-key' });
     assert('非法 DeepSeek Key 返回 400', badKey.status === 400, `实际: ${badKey.status}`);
@@ -285,6 +305,31 @@ async function runSmokeTests() {
     assert('保存后 DeepSeek 已配置', status2.json?.data?.deepseek?.configured === true);
     assert('保存后腾讯云已配置', status2.json?.data?.tencent?.configured === true);
     assert('腾讯云状态只返回掩码', typeof status2.json?.data?.tencent?.secretIdMasked === 'string' && status2.json.data.tencent.secretIdMasked.includes('****'));
+  }
+  console.log('');
+
+  // 9. OCR 响应分类回归：腾讯云以 HTTP 200 + Response.Error 返回鉴权/业务错误
+  //    （曾因此把密钥错误误判为识别成功，前端拿到空数据表现为"导入无反应"）
+  console.log('[9/9] OCR 响应分类 classifyOcrApiResponse');
+  {
+    const authFail = classifyOcrApiResponse(200, {
+      Response: { Error: { Code: 'AuthFailure.SecretIdNotFound', Message: 'The SecretId is not found.' } },
+    });
+    assert('HTTP 200 + AuthFailure 判定为失败', authFail.ok === false);
+    assert('AuthFailure 透出原始错误信息', String(authFail.message).includes('SecretId'), `实际: ${authFail.message}`);
+
+    const bizFail = classifyOcrApiResponse(200, {
+      Response: { Error: { Code: 'InvalidParameter.ImageError', Message: '图片无法解码。' } },
+    });
+    assert('HTTP 200 + 业务 Error 判定为失败', bizFail.ok === false);
+
+    const realOk = classifyOcrApiResponse(200, {
+      Response: { VatInvoiceInfos: [{ Name: '发票号码', Value: '10012001' }], RequestId: 'req-1' },
+    });
+    assert('真实成功（无 Error）判定为成功', realOk.ok === true);
+
+    const httpErr = classifyOcrApiResponse(500, null);
+    assert('HTTP 5xx 判定为失败', httpErr.ok === false && String(httpErr.message).includes('500'));
   }
   console.log('');
 

@@ -79,6 +79,66 @@ async function callDeepSeekChat(messages, { maxTokens, timeoutMs, reasoningEffor
   }
 }
 
+// ============ 管理员密钥连通性测试 ============
+// 发起一次最小真实请求（max_tokens=1），区分：
+// 401 密钥无效 / 402 余额不足 / 429 限流 / 超时 / 成功
+// 状态接口只报告"格式上已配置"，密钥是否真实可用以本测试为准
+export async function testDeepSeekCredential() {
+  const config = getEffectiveDeepSeekConfig();
+  if (!config.configured) {
+    return { ok: false, status: 'not_configured', message: '尚未保存 DeepSeek API Key，请先填写并保存。' };
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 12000);
+  try {
+    const response = await fetch(`${DEEPSEEK_API_BASE}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${config.apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: config.model,
+        messages: [{ role: 'user', content: 'ping' }],
+        max_tokens: 1,
+        stream: false,
+        reasoning_effort: 'low',
+      }),
+      signal: controller.signal,
+    });
+    if (response.ok) {
+      return { ok: true, status: 'success', message: `密钥有效（HTTP 200，模型 ${config.model}）。` };
+    }
+    let detail = `HTTP ${response.status}`;
+    try {
+      const errJson = await response.json();
+      if (errJson?.error?.message) detail = `HTTP ${response.status}：${errJson.error.message}`;
+    } catch {
+      // 保留默认 detail
+    }
+    const known = {
+      401: '密钥无效（DeepSeek 拒绝认证）：请核对 API Key 是否正确、是否已被禁用或删除。',
+      402: '账户余额不足：请到 DeepSeek 开放平台充值后重试。',
+      429: '请求被限流：请稍后再试。',
+    };
+    return {
+      ok: false,
+      status: `http_${response.status}`,
+      message: known[response.status] || `DeepSeek 返回错误（${detail}）。`,
+    };
+  } catch (err) {
+    const aborted = err?.name === 'AbortError';
+    return {
+      ok: false,
+      status: aborted ? 'timeout' : 'error',
+      message: aborted ? '连接 DeepSeek 超时（12 秒）：请检查服务器网络。' : `连接 DeepSeek 失败：${err?.message || '未知错误'}`,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // 发票解释：入参 ocrFields 为 [{name, value}]，currentForm 为前端当前表单
 export async function interpretInvoiceFields({ ocrFields, currentForm }) {
   const config = getEffectiveDeepSeekConfig();

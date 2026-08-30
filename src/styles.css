@@ -5113,6 +5113,35 @@ dd {
   font-weight: var(--fw-medium);
 }
 
+.admin-keys-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.key-test-result {
+  margin: 8px 0 0;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: var(--fs-12);
+  line-height: 1.6;
+  border: 1px solid var(--c-line-strong);
+  color: var(--c-muted);
+  word-break: break-all;
+}
+
+.key-test-result.key-test-ok {
+  border-color: rgba(31, 106, 80, 0.35);
+  background: rgba(31, 106, 80, 0.07);
+  color: var(--c-accent, #1f6a50);
+}
+
+.key-test-result.key-test-fail {
+  border-color: rgba(166, 48, 48, 0.35);
+  background: rgba(166, 48, 48, 0.07);
+  color: #a63030;
+}
+
 .admin-keys-footnote {
   display: flex;
   align-items: flex-start;

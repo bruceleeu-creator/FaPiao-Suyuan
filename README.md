@@ -211,7 +211,8 @@ zip -r 发票溯源证据链系统.zip . \
 - 服务器路径：后端 `/www/wwwroot/invoice-evidence/server`（入口 `start.mjs`），前端 `/www/wwwroot/invoice-evidence-web`，nginx vhost `/www/server/panel/vhost/nginx/invoice-evidence-web.conf`
 - 账户数据：`server/data/users.json`，每日 3 点自动备份至 `/www/backup`（保留 7 份）；业务数据在各用户浏览器 localStorage（按账户命名空间隔离，不上传服务器）
 - 更新发布：**CI/CD 自动部署**——推送到 GitHub main 分支即自动执行（验证→构建→上传→pm2 重启→健康检查，约 3 分钟），见 `.github/workflows/deploy.yml` 与仓库 Actions 页；也可在 Actions 页手动触发（Run workflow）。部署密钥存仓库 Secrets，账户数据 server/data 永不被部署覆盖
-- 上线密钥（推荐网页方式）：管理员登录 →「接口配置」页直接填写 DeepSeek API Key 与腾讯云 SecretId/SecretKey，保存即生效（无需重启）。备选：服务器 `server/.env` 填入同名变量（优先级低于网页配置）。
+- 上线密钥（推荐网页方式）：管理员登录 →「接口配置」页直接填写 DeepSeek API Key 与腾讯云 SecretId/SecretKey，保存即生效（无需重启），并点「测试连接」发起一次最小真实调用验证密钥真实可用（区分 401 密钥无效 / 402 欠费 / AuthFailure 密钥被拒 / 超时）。备选：服务器 `server/.env` 填入同名变量（优先级低于网页配置）。
+- 故障排查：上传发票"没反应/卡住"时优先到「接口配置」页点「测试连接」——密钥未配置或无效时 OCR 会静默失败，页面顶部不会自动提示根因。
 
 ## 10. 产品边界与一期范围
 

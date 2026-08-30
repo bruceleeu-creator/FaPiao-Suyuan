@@ -30,9 +30,9 @@ import {
   buildVerifyReservedResponse,
   generateTraceId,
 } from './tencentProxyResponses.mjs';
-import { recognizeVatInvoice } from './tencentOcrClient.mjs';
+import { recognizeVatInvoice, testTencentOcrCredentials } from './tencentOcrClient.mjs';
 import { checkDeepSeekConfigured } from './deepseekConfig.mjs';
-import { interpretInvoiceFields, generateInvoiceQuestions, assessInvoiceRisk } from './deepseekClient.mjs';
+import { interpretInvoiceFields, generateInvoiceQuestions, assessInvoiceRisk, testDeepSeekCredential } from './deepseekClient.mjs';
 import { registerUser, verifyCredential, issueToken, verifyToken } from './authStore.mjs';
 import {
   saveDeepSeekCredential,
@@ -414,6 +414,42 @@ async function handleRequest(req, res) {
       return;
     }
 
+    // 3.4 POST /api/admin/keys/tencent/test —— 真实调用一次 OCR 验证密钥可用性
+    // 区分：未配置 / 密钥被拒（AuthFailure）/ 网络超时 / 密钥有效
+    if (method === 'POST' && pathname === '/api/admin/keys/tencent/test') {
+      const testResult = await testTencentOcrCredentials();
+      const payload = {
+        ok: testResult.ok,
+        service: 'admin-keys',
+        status: 'success',
+        data: testResult,
+        message: testResult.message,
+        traceId,
+        timestamp: new Date().toISOString(),
+      };
+      logRequest(method, pathname, 200, traceId);
+      sendJson(res, 200, payload, corsOrigin);
+      return;
+    }
+
+    // 3.5 POST /api/admin/keys/deepseek/test —— 最小真实请求验证密钥可用性
+    // 区分：未配置 / 401 密钥无效 / 402 欠费 / 429 限流 / 超时 / 成功
+    if (method === 'POST' && pathname === '/api/admin/keys/deepseek/test') {
+      const testResult = await testDeepSeekCredential();
+      const payload = {
+        ok: testResult.ok,
+        service: 'admin-keys',
+        status: 'success',
+        data: testResult,
+        message: testResult.message,
+        traceId,
+        timestamp: new Date().toISOString(),
+      };
+      logRequest(method, pathname, 200, traceId);
+      sendJson(res, 200, payload, corsOrigin);
+      return;
+    }
+
     // /api/admin/keys 下其他路径或方法
     const payload = buildErrorResponse(ERROR_CODES.NOT_FOUND, `路径 ${pathname} 不存在。`);
     logRequest(method, pathname, 404, payload.traceId);
@@ -596,7 +632,9 @@ async function handleRequest(req, res) {
     '/api/auth/me',
     '/api/admin/keys/status',
     '/api/admin/keys/deepseek',
+    '/api/admin/keys/deepseek/test',
     '/api/admin/keys/tencent',
+    '/api/admin/keys/tencent/test',
     '/api/tencent/ocr/invoice',
     '/api/tencent/invoice/verify',
     '/api/deepseek/interpret',

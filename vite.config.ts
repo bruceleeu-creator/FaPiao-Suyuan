@@ -10,6 +10,7 @@ export default defineConfig({
       '/api/auth': 'http://127.0.0.1:8787',
       '/api/tencent': 'http://127.0.0.1:8787',
       '/api/deepseek': 'http://127.0.0.1:8787',
+      '/api/admin': 'http://127.0.0.1:8787',
     },
   },
 });
