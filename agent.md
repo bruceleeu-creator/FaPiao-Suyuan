@@ -118,7 +118,24 @@ npm run validate      # 一键全验证
 - 备份：每日 3 点 crontab 备份 `server/data` 到 `/www/backup`（留 7 份）。
 - 更新发布：本地 `npm run build` → `rsync -a dist/ root@49.232.160.7:/www/wwwroot/invoice-evidence-web/`；后端改动 `scp server/*.mjs` 后 `pm2 restart invoice-evidence-server`。
 - **CI/CD 自动部署（2026-08-24）**：`.github/workflows/deploy.yml`——推送 main 自动 npm ci → validate → rsync 前端/后端 → pm2 restart → 内外网健康检查；密钥在仓库 Secrets（DEPLOY_SSH_KEY/HOST/USER，专用部署密钥 ~/.ssh/fapiao_deploy）；concurrency 防并发；账户数据永不在部署范围。
-- 上线密钥（可选）：服务器 `server/.env` 填 `TENCENT_CLOUD_SECRET_ID/KEY`、`DEEPSEEK_API_KEY` 后 `pm2 restart`，启用真实 OCR/DeepSeek（缺失自动模拟模式）。
+- **双远程仓库（2026-08-30）**：
+  - `origin` → `https://github.com/bruceleeu-creator/FaPiao-Suyuan.git`（主仓库，推送 main 触发 CI/CD 部署）
+  - `gitea` → `http://49.232.160.7:3000/BruceLEEU/Fapiao-Suyuan.git`（生产服务器上自建 Gitea，仅备份镜像，**推送不触发部署**）
+  - 常用命令：`git push origin main`（发布上线）/ `git push gitea main`（备份）/ `git pull gitea main`（GitHub 断网时拉取）
+  - 新机器补配：`git remote add gitea http://49.232.160.7:3000/BruceLEEU/Fapiao-Suyuan.git`
+- **GitHub 连通性坑**：本机与服务器到 GitHub 均间歇断网（超时/连接重置，时好时坏）；Gitea 在自家服务器上始终可达，可作灾备拉取源。
+- **浅克隆坑（Gitea 推送）**：Gitea 拒绝浅仓库推送（`shallow update not allowed`）。本仓库根提交 `e3f871f`「初始导入」，完整历史共 7 提交；若本地是 `--depth` 克隆，推送前删 `.git/shallow`（需先 `git fsck` 确认本地已有全部历史）。
+- **Gitea 安全**：HTTP 明文（IP 直连无证书），推送凭据明文过网；待办：宝塔配域名 + HTTPS。
+- 上线密钥（可选）：服务器 `server/.env` 填 `TENCENT_CLOUD_SECRET_ID/KEY`、`DEEPSEEK_API_KEY` 后 `pm2 restart`，启用真实 OCR/DeepSeek（缺失自动模拟模式）；推荐改用管理员网页「接口配置」页保存（加密存储、优先级高于 .env、保存即生效）。
+
+### 4.7 发票导入修复与密钥测试（2026-08-30，提交 ea55321）
+
+- **核心 Bug**：腾讯云对鉴权失败返回 **HTTP 200 + Response.Error**，`tencentOcrClient.mjs` 原来只看状态码 200 即判成功 → 密钥错误时前端走成功分支但数据全空，表现为"导入无反应"。修复：`classifyOcrApiResponse()` 检查 `Response.Error`（冒烟测试有回归断言）。
+- **超时保护**：OCR 请求加 20s 超时（socket 空闲 + 硬超时双保险），超时返回 status=timeout；DeepSeek 客户端原有 30-40s 超时不变。
+- **密钥测试接口**：`POST /api/admin/keys/{deepseek,tencent}/test`（管理员），最小真实调用区分：未配置 / 401 密钥无效 / 402 欠费 / 429 限流 / AuthFailure 密钥被拒 / 超时；AdminKeysPanel.tsx 加「测试连接」按钮（key-test-result 样式）。注意：状态接口的 configured 只代表"格式合法"，密钥真实可用以测试接口为准。
+- **导入页指引**：OCR not_configured 时按角色提示（管理员→去接口配置页，普通用户→联系管理员）。
+- **vite 代理**：补 `/api/admin`（此前本地开发管理页密钥接口不可达）。
+- 验证口径：370 前端测试 + 构建 + 后端冒烟 85/85；本地与生产双端实测。
 
 ## 5. 涉及文件索引
 
@@ -137,8 +154,10 @@ npm run validate      # 一键全验证
 
 - **8083 防火墙**：需用户在腾讯云控制台放行（TCP/8083/0.0.0.0/0），放行前外网不可达（服务器本机已验证全通）。
 - **HTTP 明文**：IP 直连无 HTTPS（无域名办不了证书）；上域名需改 nginx 三处 + 证书，架构已预留。
+- **服务器 SSH 加固待确认**：ssh 开密码登录 + root 直登，auth 日志已有 14.8 万次爆破尝试；已向用户提议禁用密码登录（保留密钥登录），等用户确认后执行。docker 端口（8478/4440/5000/13306/5212 等）对外监听，需用户到腾讯云防火墙核对放行范围。
+- **生产密钥仍未配好（2026-08-30 复核）**：OCR 密钥未配置（not_configured）；DeepSeek 已存密钥但无效（真实调用 401）。用户两次提供的腾讯云 SecretId/SecretKey 组合均验证为签名不匹配（官方 SDK 交叉验证排除代码问题），等用户从 CAM 新建密钥弹窗当场复制配对密钥；配好后用管理页「测试连接」验证。
+- **诊断账户待清理**：生产 users.json 存有 diag_test_0830（2026-08-30 诊断注册，role=user）；系统暂无删户接口，可 SSH 手动清理。
 - 验真、查重、凭证接口仍为模拟/预留（产品边界内，一期不替换）。
-- 线上密钥未配置：服务器 server/.env 为空，OCR/DeepSeek 走模拟模式；配好密钥重启后端即启用真实调用。
 - 业务数据在用户浏览器（按账户命名空间），服务器只存账户库；跨设备同步属后续升级。
 - 工作流操作日志第一条仍叫「开始识别」（内部标签，测试锁定）；改名需同步 `workflowReducer` + 2 个测试文件。
 - 打包分发：源码 zip（排除 node_modules/dist/.tsbuild/.git/server/data），解压后 `npm install && npm run dev`；密钥需重新配置。

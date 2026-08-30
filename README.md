@@ -203,18 +203,48 @@ zip -r 发票溯源证据链系统.zip . \
 
 解压后 `npm install && npm run dev` 即可运行（密钥需按第 2.1 节重新配置）。
 
-## 9. 公网部署（腾讯云 49.232.160.7）
+## 9. 代码仓库与发布方式（双远程）
+
+本项目配置了两个远程仓库，职责不同：
+
+| 远程名 | 地址 | 用途 |
+|---|---|---|
+| `origin` | `https://github.com/bruceleeu-creator/FaPiao-Suyuan.git` | 主仓库；**推送 main 即触发 CI/CD 自动部署**（约 3 分钟） |
+| `gitea` | `http://49.232.160.7:3000/BruceLEEU/Fapiao-Suyuan.git` | 自建 Gitea 备份镜像（跑在生产服务器上）；**仅备份，推送不触发部署** |
+
+日常操作：
+
+```bash
+git push origin main   # 发布上线（GitHub Actions 自动验证→构建→上传→重启→健康检查）
+git push gitea main    # 仅备份到自建仓库（GitHub 断网时的保险）
+git pull gitea main    # GitHub 连不上时，从自建仓库拉取最新代码
+```
+
+在新电脑上补配自建远程：
+
+```bash
+git remote add gitea http://49.232.160.7:3000/BruceLEEU/Fapiao-Suyuan.git
+```
+
+注意事项：
+
+- **GitHub 从本地/服务器偶尔直连不稳**（超时、连接重置，时好时坏）。自建 Gitea 在自己服务器上，始终可达，可当灾备拉取源。
+- **Gitea 拒绝浅克隆推送**（报 `shallow update not allowed`）。本仓库根提交为 `e3f871f`「初始导入」，完整历史共 7 个提交；若克隆时带了 `--depth` 参数，推送前删除 `.git/shallow` 文件即可（本地已有全部历史时才安全，可用 `git fsck` 确认完整性）。
+- Gitea 目前走 HTTP 明文（IP 直连无证书），推送凭据明文过网；后续可在宝塔为其配置域名 + HTTPS 加固。
+- CI/CD 细节见 `.github/workflows/deploy.yml`；也可在仓库 Actions 页手动触发（Run workflow）。部署密钥存仓库 Secrets，账户数据 `server/data` 永不被部署覆盖。
+
+## 10. 公网部署（腾讯云 49.232.160.7）
 
 - 访问地址：`http://49.232.160.7:8083/`（8083 需在腾讯云控制台防火墙放行）
 - 拓扑：nginx:8083（静态 dist + `/api/` 反代）→ Node 后端 127.0.0.1:8787（pm2 托管 `invoice-evidence-server`，不对外）
 - 安全：OCR/验真/DeepSeek 接口需 `Authorization: Bearer <token>`（登录获得），防止密钥额度被匿名消耗；健康检查与账户接口开放
 - 服务器路径：后端 `/www/wwwroot/invoice-evidence/server`（入口 `start.mjs`），前端 `/www/wwwroot/invoice-evidence-web`，nginx vhost `/www/server/panel/vhost/nginx/invoice-evidence-web.conf`
 - 账户数据：`server/data/users.json`，每日 3 点自动备份至 `/www/backup`（保留 7 份）；业务数据在各用户浏览器 localStorage（按账户命名空间隔离，不上传服务器）
-- 更新发布：**CI/CD 自动部署**——推送到 GitHub main 分支即自动执行（验证→构建→上传→pm2 重启→健康检查，约 3 分钟），见 `.github/workflows/deploy.yml` 与仓库 Actions 页；也可在 Actions 页手动触发（Run workflow）。部署密钥存仓库 Secrets，账户数据 server/data 永不被部署覆盖
+- 更新发布：见第 9 节「代码仓库与发布方式」——推 GitHub main 自动 CI/CD 部署，推自建 Gitea 仅备份
 - 上线密钥（推荐网页方式）：管理员登录 →「接口配置」页直接填写 DeepSeek API Key 与腾讯云 SecretId/SecretKey，保存即生效（无需重启），并点「测试连接」发起一次最小真实调用验证密钥真实可用（区分 401 密钥无效 / 402 欠费 / AuthFailure 密钥被拒 / 超时）。备选：服务器 `server/.env` 填入同名变量（优先级低于网页配置）。
 - 故障排查：上传发票"没反应/卡住"时优先到「接口配置」页点「测试连接」——密钥未配置或无效时 OCR 会静默失败，页面顶部不会自动提示根因。
 
-## 10. 产品边界与一期范围
+## 11. 产品边界与一期范围
 
 - 一期覆盖八类高频发票：餐饮、住宿、交通、车辆、办公、咨询服务、广告推广、租赁物业（三类做深：餐饮、住宿、咨询服务）。
 - 一期只生成凭证草稿，不自动过账；不做自动申报、不做完整纳税申报表、不做全量合同/银行流水系统。
@@ -222,7 +252,7 @@ zip -r 发票溯源证据链系统.zip . \
 - 验真、凭证接口仍为模拟/预留；OCR 为真实调用（腾讯云），DeepSeek 为真实调用（失败回退本地）。
 - 高风险、低置信度、重大金额、关联交易、证据缺失必须人工确认，不得自动放行。
 
-## 11. 常见问题
+## 12. 常见问题
 
 | 问题 | 处理 |
 |---|---|
@@ -234,17 +264,19 @@ zip -r 发票溯源证据链系统.zip . \
 | 忘记密码 | 本期无找回功能；演示环境可删除 `server/data/users.json` 中对应账户后重新注册（该账户本地数据仍在浏览器命名空间中） |
 | 换账户后看不到之前的发票 | 数据按账户隔离（`invoice_evidence_u{用户ID}__*`），退出后用原账户登录即可看到 |
 
-## 12. 文档索引
+## 13. 文档索引
 
 - 项目记忆：`AGENTS.md`（产品定位与决策）、`agent.md`（开发完成态详细记录）、`progress.md`（Gate 验收记录）
 - 核心架构：`发票入账系统产品架构方案.md`
 - 文档索引：`docs/CO_20260719_文档瘦身索引.md`
 - 历史过程归档：`docs/archive/202607-process/`
 
-## 13. 版本记录
+## 14. 版本记录
 
 | 日期 | 里程碑 |
 |---|---|
 | 2026-07 | Gate 1 工程骨架 → Gate 2A 可操作闭环 → Gate 2B 多发票状态机 → Gate 3 AI 业务问答与证据闸口 |
 | 2026-08 | 腾讯云 OCR + DeepSeek 全链路接入、证据模板 Word 化、异常工作台/风险驾驶舱升级、证据补充与驾驶舱任务卡片 UI 化，一期功能开发完毕 |
 | 2026-08 | 账户系统：注册/登录/令牌会话，数据按账户命名空间隔离，登录页与路由守卫；修复冒烟脚本 body 未发送、中文路径下后端不启动两处存量问题 |
+| 2026-08-24 | 公网上线 `http://49.232.160.7:8083/` + CI/CD 自动部署（推送 GitHub main 即发布） |
+| 2026-08-30 | 修复发票导入"无反应/卡住"（OCR 密钥错误被误判为成功的核心 Bug + 20s 超时保护）；管理页新增密钥「测试连接」；双远程仓库（GitHub 主 + 自建 Gitea 备份，见第 9 节） |
