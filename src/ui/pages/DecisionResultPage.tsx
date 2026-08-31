@@ -4,6 +4,8 @@ import { AlertOctagon, CheckCircle2, Download, FileText, Layers } from 'lucide-r
 import { useWorkflow } from '../../workflow/WorkflowContext';
 import { mockBuildVoucherDraft } from '../../ai/mockVoucherDraftService';
 import { findDemoCaseAsSession } from '../../data/demoCaseToDecisionDraft';
+import { authHeaders } from '../../auth/authStorage';
+import { deepSeekCredentialBody } from '../../integrations/sessionKeyStore';
 import {
   buildVoucherCsv,
   buildVoucherCsvFilename,
@@ -11,6 +13,26 @@ import {
 } from '../../voucher/voucherCsvTemplate';
 import { GateRail } from '../components/GateRail';
 import { PageHeader } from '../components/PageHeader';
+
+// AI 凭证草稿分录（后端已做借贷平衡校验，前端仅展示）
+interface AiVoucherEntry {
+  direction: '借' | '贷';
+  account: string;
+  amount: number;
+}
+
+function formatAiVoucher(
+  data: { summary?: string; entries: AiVoucherEntry[]; note?: string },
+  invoiceNumber: string,
+): string {
+  const lines = [
+    `【凭证草稿 · AI 生成】${invoiceNumber}（草稿，不自动过账）`,
+    ...(data.summary ? [data.summary] : []),
+    ...data.entries.map((e) => `${e.direction}：${e.account} ${e.amount.toLocaleString('zh-CN')} 元`),
+    `注：${data.note || '本凭证为草稿，需财务复核确认后才可过账。'}`,
+  ];
+  return lines.join('\n');
+}
 
 export function DecisionResultPage() {
   const { session: activeSession, activeCaseId, resolveCaseId, loadCase, getCase, dispatch } = useWorkflow();
@@ -38,6 +60,45 @@ export function DecisionResultPage() {
   // 标准凭证 CSV 导出状态（hooks 必须在 early return 之前调用）
   const [exportHint, setExportHint] = useState<string>('');
 
+  // AI 凭证草稿（DeepSeek，携带会话密钥）：成功用 AI 分录，失败/未配置回退本地规则
+  const [aiVoucher, setAiVoucher] = useState<{ text: string; source: 'ai' | 'local' } | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    setAiVoucher(null);
+    const s = session;
+    if (!s?.decisionDraft || !s?.invoice || s.decisionDraft.voucherDraft.status === '禁止生成') return;
+    const decision = s.decisionDraft;
+    const inv = s.invoice;
+    (async () => {
+      try {
+        const r = await fetch('/api/deepseek/voucher', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...authHeaders() },
+          body: JSON.stringify({
+            invoice: inv,
+            decision,
+            ...deepSeekCredentialBody(),
+          }),
+          signal: AbortSignal.timeout(30000),
+        });
+        const j = await r.json().catch(() => null);
+        if (cancelled) return;
+        if (j?.ok && Array.isArray(j.data?.entries) && j.data.entries.length >= 2) {
+          setAiVoucher({ text: formatAiVoucher(j.data, inv.invoiceNumber), source: 'ai' });
+        } else {
+          setAiVoucher({ text: mockBuildVoucherDraft(inv, decision), source: 'local' });
+        }
+      } catch {
+        if (!cancelled) {
+          setAiVoucher({ text: mockBuildVoucherDraft(inv, decision), source: 'local' });
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [session?.caseId, session?.decisionDraft?.voucherDraft?.status]);
+
   // 自动清空导出提示
   useEffect(() => {
     if (!exportHint) return;
@@ -59,7 +120,8 @@ export function DecisionResultPage() {
   }
 
   const { decisionDraft, invoice } = session;
-  const voucherText = mockBuildVoucherDraft(invoice, decisionDraft);
+  // AI 草稿优先（DeepSeek 生成且借贷平衡校验通过），未就绪/失败用本地规则版
+  const voucherText = aiVoucher?.text ?? mockBuildVoucherDraft(invoice, decisionDraft);
   const isBlocked = decisionDraft.voucherDraft.status === '禁止生成';
   // 本地 case 才能执行财务确认和误报标记（演示样例不持久化，dispatch 无效）
   const isLocalCase = session.caseId.startsWith('CASE-');
@@ -260,11 +322,15 @@ export function DecisionResultPage() {
         <div className="voucher-head">
           <FileText size={20} aria-hidden="true" />
           <strong>凭证草稿建议</strong>
+          <span className="mock-badge">
+            {aiVoucher === null ? '生成中…' : aiVoucher.source === 'ai' ? 'AI 生成 · 借贷平衡已校验' : '本地规则生成'}
+          </span>
           <span className="mock-badge">草稿 · 不自动过账</span>
         </div>
         <pre className="voucher-text">{voucherText}</pre>
         <p className="voucher-note">
           凭证仅为草稿，不自动过账。高风险/阻断案例不生成可用凭证。
+          AI 生成需 DeepSeek 密钥（「接口配置」页启用会话密钥），未启用或生成失败时自动回退本地规则。
         </p>
       </section>
 

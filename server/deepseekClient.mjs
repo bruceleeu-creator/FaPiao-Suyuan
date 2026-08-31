@@ -36,11 +36,25 @@ export function extractJsonObject(content) {
   return candidate.slice(start, end + 1);
 }
 
+// 解析 DeepSeek 调用配置：请求级凭据（用户会话密钥，不落盘）> 服务器配置（加密存储 > .env）
+// credentials 形如 {apiKey?, model?}；格式不合法的请求级值会被忽略并回退服务器配置
+function resolveConfig(credentials) {
+  const effective = getEffectiveDeepSeekConfig();
+  if (!credentials || typeof credentials !== 'object') return effective;
+  const apiKey = typeof credentials.apiKey === 'string' && credentials.apiKey.startsWith('sk-') && credentials.apiKey.length >= 18
+    ? credentials.apiKey
+    : effective.apiKey;
+  const model = typeof credentials.model === 'string' && credentials.model.trim().length >= 3
+    ? credentials.model.trim()
+    : effective.model;
+  return { apiKey, model, configured: apiKey.length > 0, fromRequest: apiKey !== effective.apiKey };
+}
+
 // 调用 DeepSeek chat completions
 // reasoningEffort：'low' 等档位可大幅缩短推理模型的思考时间（交互场景必须传），
 // 不传则使用模型默认（深度思考，耗时 30-60s+，仅适合离线任务）
-async function callDeepSeekChat(messages, { maxTokens, timeoutMs, reasoningEffort }) {
-  const { apiKey, model } = getEffectiveDeepSeekConfig();
+async function callDeepSeekChat(messages, { maxTokens, timeoutMs, reasoningEffort, credentials }) {
+  const { apiKey, model } = resolveConfig(credentials);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -83,8 +97,8 @@ async function callDeepSeekChat(messages, { maxTokens, timeoutMs, reasoningEffor
 // 发起一次最小真实请求（max_tokens=1），区分：
 // 401 密钥无效 / 402 余额不足 / 429 限流 / 超时 / 成功
 // 状态接口只报告"格式上已配置"，密钥是否真实可用以本测试为准
-export async function testDeepSeekCredential() {
-  const config = getEffectiveDeepSeekConfig();
+export async function testDeepSeekCredential(credentials) {
+  const config = resolveConfig(credentials);
   if (!config.configured) {
     return { ok: false, status: 'not_configured', message: '尚未保存 DeepSeek API Key，请先填写并保存。' };
   }
@@ -139,9 +153,218 @@ export async function testDeepSeekCredential() {
   }
 }
 
+// ============ AI 辅助验真（替代腾讯云验真配置）============
+// 边界（诚实声明）：DeepSeek 开放平台 API 不提供联网查询官方查验平台的能力，
+// 本功能为「票面规则确定性核验 + AI 语义一致性核验」，结果标注为 AI 辅助，
+// 不等同于全国增值税发票查验平台的权威验真；存疑一律交人工，不硬失败。
+// 确定性预检（规则引擎职责，AI 之前执行）：
+//   - 发票号码：8 位（传统）或 20 位（全电）数字
+//   - 发票代码：10/12 位数字（全电发票可无代码）
+//   - 日期：不晚于今天，不早于 5 年前
+//   - 勾稽：|amount × taxRate − taxAmount| ≤ 0.05 且 total = amount + taxAmount（±0.05）
+function deterministicPreCheck(invoice = {}) {
+  const findings = [];
+  let hardFail = false;
+  const number = String(invoice.invoiceNumber || '').trim();
+  const code = String(invoice.invoiceCode || '').trim();
+  if (!number) {
+    findings.push('缺少发票号码，无法核验。');
+    hardFail = true;
+  } else if (!/^\d{8}$|^\d{20}$/.test(number)) {
+    findings.push(`发票号码位数异常（${number.length} 位）：应为 8 位（传统发票）或 20 位（全电发票）。`);
+    hardFail = true;
+  }
+  if (code && !/^\d{10}$|^\d{12}$/.test(code)) {
+    findings.push(`发票代码位数异常（${code.length} 位）：应为 10 或 12 位（全电发票可无代码）。`);
+    hardFail = true;
+  }
+  const date = String(invoice.issueDate || '').trim();
+  if (date) {
+    const parsed = new Date(date);
+    const now = new Date();
+    const fiveYearsAgo = new Date(now.getFullYear() - 5, now.getMonth(), now.getDate());
+    if (Number.isNaN(parsed.getTime())) {
+      findings.push('开票日期格式无法解析。');
+      hardFail = true;
+    } else if (parsed > now) {
+      findings.push('开票日期晚于今天（未来日期发票）。');
+      hardFail = true;
+    } else if (parsed < fiveYearsAgo) {
+      findings.push('开票日期早于五年前，超出常规核验范围。');
+    }
+  }
+  const amount = Number(invoice.amount) || 0;
+  const taxAmount = Number(invoice.taxAmount) || 0;
+  const total = Number(invoice.totalAmount) || 0;
+  if (amount > 0 && taxAmount >= 0 && total > 0) {
+    if (Math.abs(amount + taxAmount - total) > 0.05) {
+      findings.push(`价税勾稽不符：金额 ${amount} + 税额 ${taxAmount} ≠ 价税合计 ${total}。`);
+      hardFail = true;
+    }
+  }
+  return { findings, hardFail };
+}
+
+const VERIFY_SYSTEM_PROMPT = `你是增值税发票票面核验助手。基于给定的票面字段做一致性核验（无法联网查询官方平台，结论只基于票面内部逻辑）。检查维度：
+1. 票种与税率匹配（如餐饮服务 6%、农产品 9%、13% 货物等明显错配）
+2. 项目名称/类别与销方经营范围的语义合理性
+3. 购销方名称、开票日期与票种年代的一致性（如全电发票不应有 10 位代码）
+4. 金额字段间的勾稽（若未通过确定性预检会另外标注）
+资料不足或无法判断时如实输出"无法判断"，不得臆造。
+
+只输出一个 JSON 对象，禁止 markdown：
+{"conclusion":"一致"|"存疑"|"无法判断","findings":["具体发现，每条引用票面事实"],"advice":"给核验人员的一句话建议"}`;
+
+export async function verifyInvoiceByAi({ invoice, credentials }) {
+  const config = resolveConfig(credentials);
+  if (!config.configured) {
+    return {
+      ok: false,
+      status: 'not_configured',
+      message: 'AI 核验需要 DeepSeek 密钥：请在「接口配置」页填入（仅存于当前浏览器会话）。',
+    };
+  }
+
+  const pre = deterministicPreCheck(invoice);
+  // 确定性硬伤直接出结论，不消耗 AI 调用
+  if (pre.hardFail) {
+    return {
+      ok: true,
+      status: 'success',
+      data: {
+        conclusion: '验真失败',
+        mode: 'rule',
+        findings: pre.findings,
+        advice: '票面存在确定性规则错误（位数/勾稽/日期），请核对原件。',
+        disclaimer: 'AI 辅助核验 + 规则引擎，非官方查验平台结果。',
+        mappedStatus: '验真失败',
+      },
+    };
+  }
+
+  const userContent = `发票票面字段：\n${JSON.stringify(invoice || {}, null, 0)}\n\n确定性预检发现（供参考）：${pre.findings.length ? pre.findings.join('；') : '无'}`;
+  const result = await callDeepSeekChat(
+    [
+      { role: 'system', content: VERIFY_SYSTEM_PROMPT },
+      { role: 'user', content: userContent },
+    ],
+    { maxTokens: 2000, timeoutMs: 30000, reasoningEffort: 'low', credentials },
+  );
+  if (!result.ok) {
+    return { ok: false, status: 'failed', message: result.message };
+  }
+  const jsonText = extractJsonObject(result.content);
+  if (!jsonText) {
+    return { ok: false, status: 'bad_response', message: 'DeepSeek 未返回可解析的 JSON。' };
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(jsonText);
+  } catch {
+    return { ok: false, status: 'bad_response', message: 'DeepSeek 返回的 JSON 无法解析。' };
+  }
+
+  const conclusion =
+    parsed.conclusion === '一致' || parsed.conclusion === '存疑' || parsed.conclusion === '无法判断'
+      ? parsed.conclusion
+      : '无法判断';
+  const findings = [
+    ...pre.findings,
+    ...(Array.isArray(parsed.findings)
+      ? parsed.findings.filter((f) => typeof f === 'string' && f.trim()).slice(0, 6)
+      : []),
+  ];
+  // 映射保守：一致→验真通过；存疑/无法判断→待验真（不硬失败阻断流程，交人工）
+  const mappedStatus = conclusion === '一致' ? '验真通过' : '待验真';
+
+  return {
+    ok: true,
+    status: 'success',
+    data: {
+      conclusion,
+      mode: 'ai',
+      findings,
+      advice: typeof parsed.advice === 'string' ? parsed.advice : '',
+      disclaimer: 'AI 辅助核验（票面一致性），非官方查验平台结果；重大金额请以官方查验为准。',
+      mappedStatus,
+    },
+  };
+}
+
+// ============ AI 凭证草稿生成（替代凭证接口配置）============
+// 与本地规则版（前端 mockBuildVoucherDraft）同样的铁律：只生成草稿、不自动过账、
+// 高风险阻断案例拒绝生成；AI 失败时前端回退本地规则版
+const VOUCHER_SYSTEM_PROMPT = `你是会计凭证草稿助手。基于发票票面、费用类别与入账建议生成会计凭证草稿。规则：
+1. 借贷必须平衡：借方合计 = 贷方合计 = 价税合计（专票：借费用=不含税金额、借进项税=税额；普票：借费用=价税合计）。
+2. 贷方科目：员工报销场景用"其他应付款-员工报销"，对公付款用"银行存款"。
+3. 科目路径沿用建议的一级/二级/三级科目，不得虚构科目。
+4. 只输出草稿，绝不建议自动过账。
+
+只输出一个 JSON 对象，禁止 markdown：
+{"summary":"一句话分录说明","entries":[{"direction":"借"|"贷","account":"科目路径","amount":数字}],"note":"草稿备注（人工复核提示）"}`;
+
+export async function buildVoucherDraftByAi({ invoice, decision, credentials }) {
+  const config = resolveConfig(credentials);
+  if (!config.configured) {
+    return {
+      ok: false,
+      status: 'not_configured',
+      message: 'AI 凭证草稿需要 DeepSeek 密钥：请在「接口配置」页填入（仅存于当前浏览器会话）。',
+    };
+  }
+
+  const userContent = `发票票面：\n${JSON.stringify(invoice || {}, null, 0)}\n\n入账建议（决策草稿）：\n${JSON.stringify(decision || {}, null, 0)}`;
+  const result = await callDeepSeekChat(
+    [
+      { role: 'system', content: VOUCHER_SYSTEM_PROMPT },
+      { role: 'user', content: userContent },
+    ],
+    { maxTokens: 2500, timeoutMs: 30000, reasoningEffort: 'low', credentials },
+  );
+  if (!result.ok) {
+    return { ok: false, status: 'failed', message: result.message };
+  }
+  const jsonText = extractJsonObject(result.content);
+  if (!jsonText) {
+    return { ok: false, status: 'bad_response', message: 'DeepSeek 未返回可解析的 JSON。' };
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(jsonText);
+  } catch {
+    return { ok: false, status: 'bad_response', message: 'DeepSeek 返回的 JSON 无法解析。' };
+  }
+
+  const entries = Array.isArray(parsed.entries)
+    ? parsed.entries
+        .filter((e) => e && (e.direction === '借' || e.direction === '贷') && typeof e.account === 'string' && e.account.trim() && Number.isFinite(Number(e.amount)) && Number(e.amount) > 0)
+        .map((e) => ({ direction: e.direction, account: e.account.trim(), amount: Math.round(Number(e.amount) * 100) / 100 }))
+    : [];
+  // 质量闸：至少 2 条分录且借贷平衡（±0.05），否则拒绝并让前端回退本地规则
+  const debit = entries.filter((e) => e.direction === '借').reduce((s, e) => s + e.amount, 0);
+  const credit = entries.filter((e) => e.direction === '贷').reduce((s, e) => s + e.amount, 0);
+  if (entries.length < 2 || Math.abs(debit - credit) > 0.05) {
+    return {
+      ok: false,
+      status: 'unbalanced',
+      message: 'AI 生成的分录借贷不平衡，已拒绝（回退本地规则生成）。',
+    };
+  }
+
+  return {
+    ok: true,
+    status: 'success',
+    data: {
+      summary: typeof parsed.summary === 'string' ? parsed.summary : '',
+      entries,
+      note: typeof parsed.note === 'string' ? parsed.note : '本凭证为草稿，需财务复核确认后才可过账。',
+    },
+  };
+}
+
 // 发票解释：入参 ocrFields 为 [{name, value}]，currentForm 为前端当前表单
-export async function interpretInvoiceFields({ ocrFields, currentForm }) {
-  const config = getEffectiveDeepSeekConfig();
+export async function interpretInvoiceFields({ ocrFields, currentForm, credentials }) {
+  const config = resolveConfig(credentials);
   if (!config.configured) {
     return {
       ok: false,
@@ -161,7 +384,7 @@ export async function interpretInvoiceFields({ ocrFields, currentForm }) {
       { role: 'system', content: SYSTEM_PROMPT },
       { role: 'user', content: userContent },
     ],
-    { maxTokens: 3000, timeoutMs: 30000, reasoningEffort: 'low' },
+    { maxTokens: 3000, timeoutMs: 30000, reasoningEffort: 'low', credentials },
   );
   if (!result.ok) {
     return { ok: false, status: 'failed', message: result.message };
@@ -284,8 +507,8 @@ function normalizeQuestions(parsed) {
 }
 
 // 基于票面生成业务追问问题
-export async function generateInvoiceQuestions({ invoice }) {
-  const config = getEffectiveDeepSeekConfig();
+export async function generateInvoiceQuestions({ invoice, credentials }) {
+  const config = resolveConfig(credentials);
   if (!config.configured) {
     return { ok: false, status: 'not_configured', message: 'DeepSeek 尚未配置 DEEPSEEK_API_KEY。' };
   }
@@ -296,7 +519,7 @@ export async function generateInvoiceQuestions({ invoice }) {
       { role: 'system', content: QUESTIONS_SYSTEM_PROMPT },
       { role: 'user', content: userContent },
     ],
-    { maxTokens: 4000, timeoutMs: 40000, reasoningEffort: 'low' },
+    { maxTokens: 4000, timeoutMs: 40000, reasoningEffort: 'low', credentials },
   );
   if (!result.ok) {
     return { ok: false, status: 'failed', message: result.message };
@@ -341,8 +564,8 @@ const RISK_SYSTEM_PROMPT = `你是发票入账风险审单专家。基于给定�
 
 const RISK_LEVELS = ['低', '中低', '中', '高'];
 
-export async function assessInvoiceRisk({ invoice, businessEvent, evidenceChain, answers }) {
-  const config = getEffectiveDeepSeekConfig();
+export async function assessInvoiceRisk({ invoice, businessEvent, evidenceChain, answers, credentials }) {
+  const config = resolveConfig(credentials);
   if (!config.configured) {
     return { ok: false, status: 'not_configured', message: 'DeepSeek 尚未配置 DEEPSEEK_API_KEY。' };
   }
@@ -354,7 +577,7 @@ export async function assessInvoiceRisk({ invoice, businessEvent, evidenceChain,
       { role: 'system', content: RISK_SYSTEM_PROMPT },
       { role: 'user', content: userContent },
     ],
-    { maxTokens: 4000, timeoutMs: 40000, reasoningEffort: 'low' },
+    { maxTokens: 4000, timeoutMs: 40000, reasoningEffort: 'low', credentials },
   );
   if (!result.ok) {
     return { ok: false, status: 'failed', message: result.message };

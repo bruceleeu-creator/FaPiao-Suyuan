@@ -8,6 +8,7 @@
 // 两个接口失败时前端都有本地模板 / 规则兜底，不阻断流程。
 import type { StructuredQuestion, RiskLevel } from '../domain/types';
 import { authHeaders } from '../auth/authStorage';
+import { deepSeekCredentialBody } from '../integrations/sessionKeyStore';
 
 const MAPPED_FIELD_WHITELIST = new Set([
   'initiator', 'handler', 'claimant', 'participants', 'externalParty', 'occurredAt',
@@ -68,7 +69,7 @@ export async function fetchDeepSeekQuestions(
     const response = await fetch('/api/deepseek/questions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
-      body: JSON.stringify({ invoice }),
+      body: JSON.stringify({ invoice, ...deepSeekCredentialBody() }),
       // 超时兜底：后端 40s 内必有响应，网络悬挂时前端 45s 强制失败走模板回退
       signal: AbortSignal.timeout(45000),
     });
@@ -127,7 +128,7 @@ export async function fetchDeepSeekRisk(context: {
     const response = await fetch('/api/deepseek/risk', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
-      body: JSON.stringify(context),
+      body: JSON.stringify({ ...context, ...deepSeekCredentialBody() }),
       signal: AbortSignal.timeout(45000),
     });
     const text = await response.text();

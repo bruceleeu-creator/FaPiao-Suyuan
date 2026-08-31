@@ -5349,6 +5349,68 @@ dd {
   font-weight: var(--fw-medium);
 }
 
+/* 接口地址（自动配置，只读展示） */
+.aks-baseurl {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-12);
+  color: var(--c-muted);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--c-paper);
+  border: 1px solid var(--c-line-2);
+}
+
+.aks-baseurl svg {
+  color: var(--c-accent);
+  flex-shrink: 0;
+}
+
+.aks-baseurl code {
+  font-family: var(--font-mono);
+  font-size: var(--fs-12);
+  color: var(--c-ink-soft);
+}
+
+/* 服务器全局兜底密钥状态（只读提示） */
+.aks-server-fallback {
+  padding: var(--space-2) var(--space-4);
+  border-top: 1px dashed var(--c-line);
+  font-size: var(--fs-12);
+  color: var(--c-muted-2);
+  line-height: 1.6;
+}
+
+/* 设置页边界说明列表 */
+.aks-boundary-list {
+  list-style: none;
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.aks-boundary-list li {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: var(--fs-13);
+  color: var(--c-muted);
+  line-height: 1.7;
+}
+
+.aks-boundary-list svg {
+  color: var(--c-accent);
+  flex-shrink: 0;
+  margin-top: 4px;
+}
+
+.aks-actions--footer {
+  margin-top: calc(-1 * var(--space-2));
+}
+
 /* 窄屏：总览行换行、步骤条堆叠、卡片单列 */
 @media (max-width: 720px) {
   .aks-row {

@@ -32,7 +32,14 @@ import {
 } from './tencentProxyResponses.mjs';
 import { recognizeVatInvoice, testTencentOcrCredentials } from './tencentOcrClient.mjs';
 import { checkDeepSeekConfigured } from './deepseekConfig.mjs';
-import { interpretInvoiceFields, generateInvoiceQuestions, assessInvoiceRisk, testDeepSeekCredential } from './deepseekClient.mjs';
+import {
+  interpretInvoiceFields,
+  generateInvoiceQuestions,
+  assessInvoiceRisk,
+  testDeepSeekCredential,
+  verifyInvoiceByAi,
+  buildVoucherDraftByAi,
+} from './deepseekClient.mjs';
 import { registerUser, verifyCredential, issueToken, verifyToken } from './authStore.mjs';
 import {
   saveDeepSeekCredential,
@@ -468,7 +475,7 @@ async function handleRequest(req, res) {
       }
       if (!requireApiToken(req, res, corsOrigin, pathname)) return;
 
-      const { imageBase64, imageUrl, isPdf, pdfPageNumber } = bodyResult.data || {};
+      const { imageBase64, imageUrl, isPdf, pdfPageNumber, secretId, secretKey } = bodyResult.data || {};
 
     // 没有图片/PDF 数据时继续走预留响应，兼容当前前端仅传文件名的阶段
     if (!imageBase64 && !imageUrl) {
@@ -479,11 +486,13 @@ async function handleRequest(req, res) {
     }
 
     // 有图片/PDF 数据时，尝试调用真实腾讯云 OCR
+    // secretId/secretKey 为请求级凭据（用户会话密钥，仅本次调用使用，不落盘、不打印）
     const ocrResult = await recognizeVatInvoice({
       imageBase64,
       imageUrl,
       isPdf,
       pdfPageNumber,
+      credentials: secretId || secretKey ? { secretId, secretKey } : undefined,
     });
     const traceId = generateTraceId();
     if (ocrResult.ok) {
@@ -545,8 +554,10 @@ async function handleRequest(req, res) {
     }
     if (!requireApiToken(req, res, corsOrigin, pathname)) return;
 
-    const { ocrFields, currentForm } = bodyResult.data || {};
-    const deepseekResult = await interpretInvoiceFields({ ocrFields, currentForm });
+    const { ocrFields, currentForm, apiKey, model } = bodyResult.data || {};
+    // apiKey/model 为请求级凭据（用户会话密钥，仅本次调用使用，不落盘、不打印）
+    const credentials = apiKey || model ? { apiKey, model } : undefined;
+    const deepseekResult = await interpretInvoiceFields({ ocrFields, currentForm, credentials });
     const traceId = generateTraceId();
     const payload = {
       ok: deepseekResult.ok,
@@ -575,7 +586,11 @@ async function handleRequest(req, res) {
       return;
     }
     if (!requireApiToken(req, res, corsOrigin, pathname)) return;
-    const questionsResult = await generateInvoiceQuestions({ invoice: bodyResult.data?.invoice });
+    const { invoice, apiKey, model } = bodyResult.data || {};
+    const questionsResult = await generateInvoiceQuestions({
+      invoice,
+      credentials: apiKey || model ? { apiKey, model } : undefined,
+    });
     const traceId = generateTraceId();
     const payload = {
       ok: questionsResult.ok,
@@ -604,8 +619,9 @@ async function handleRequest(req, res) {
       return;
     }
     if (!requireApiToken(req, res, corsOrigin, pathname)) return;
-    const { invoice, businessEvent, evidenceChain, answers } = bodyResult.data || {};
-    const riskResult = await assessInvoiceRisk({ invoice, businessEvent, evidenceChain, answers });
+    const { invoice, businessEvent, evidenceChain, answers, apiKey, model } = bodyResult.data || {};
+    const credentials = apiKey || model ? { apiKey, model } : undefined;
+    const riskResult = await assessInvoiceRisk({ invoice, businessEvent, evidenceChain, answers, credentials });
     const traceId = generateTraceId();
     const payload = {
       ok: riskResult.ok,
@@ -615,6 +631,105 @@ async function handleRequest(req, res) {
       ...(riskResult.ok
         ? { data: riskResult.data }
         : { message: riskResult.message || 'DeepSeek 风险分析失败。' }),
+      traceId,
+      timestamp: new Date().toISOString(),
+    };
+    logRequest(method, pathname, 200, traceId);
+    sendJson(res, 200, payload, corsOrigin);
+    return;
+  }
+
+  // 6.5 POST /api/deepseek/verify
+  // AI 辅助验真（替代腾讯云验真配置）：规则确定性预检 + DeepSeek 票面一致性核验
+  // 结果标注"AI 辅助核验，非官方查验平台"；存疑交人工，不硬失败
+  if (method === 'POST' && pathname === '/api/deepseek/verify') {
+    const bodyResult = await parseJsonBody(req);
+    if (!bodyResult.ok) {
+      const payload = buildErrorResponse(ERROR_CODES.INVALID_JSON, bodyResult.error);
+      logRequest(method, pathname, 400, payload.traceId);
+      sendJson(res, 400, payload, corsOrigin);
+      return;
+    }
+    if (!requireApiToken(req, res, corsOrigin, pathname)) return;
+    const { invoice, apiKey, model } = bodyResult.data || {};
+    const verifyResult = await verifyInvoiceByAi({
+      invoice,
+      credentials: apiKey || model ? { apiKey, model } : undefined,
+    });
+    const traceId = generateTraceId();
+    const payload = {
+      ok: verifyResult.ok,
+      provider: 'deepseek',
+      service: 'invoice-verify',
+      status: verifyResult.status,
+      ...(verifyResult.ok
+        ? { data: verifyResult.data }
+        : { message: verifyResult.message || 'AI 核验失败。' }),
+      traceId,
+      timestamp: new Date().toISOString(),
+    };
+    logRequest(method, pathname, 200, traceId);
+    sendJson(res, 200, payload, corsOrigin);
+    return;
+  }
+
+  // 6.6 POST /api/deepseek/voucher
+  // AI 凭证草稿（替代凭证接口配置）：借贷平衡校验通过才返回，失败前端回退本地规则
+  if (method === 'POST' && pathname === '/api/deepseek/voucher') {
+    const bodyResult = await parseJsonBody(req);
+    if (!bodyResult.ok) {
+      const payload = buildErrorResponse(ERROR_CODES.INVALID_JSON, bodyResult.error);
+      logRequest(method, pathname, 400, payload.traceId);
+      sendJson(res, 400, payload, corsOrigin);
+      return;
+    }
+    if (!requireApiToken(req, res, corsOrigin, pathname)) return;
+    const { invoice, decision, apiKey, model } = bodyResult.data || {};
+    const voucherResult = await buildVoucherDraftByAi({
+      invoice,
+      decision,
+      credentials: apiKey || model ? { apiKey, model } : undefined,
+    });
+    const traceId = generateTraceId();
+    const payload = {
+      ok: voucherResult.ok,
+      provider: 'deepseek',
+      service: 'voucher-draft',
+      status: voucherResult.status,
+      ...(voucherResult.ok
+        ? { data: voucherResult.data }
+        : { message: voucherResult.message || 'AI 凭证草稿生成失败。' }),
+      traceId,
+      timestamp: new Date().toISOString(),
+    };
+    logRequest(method, pathname, 200, traceId);
+    sendJson(res, 200, payload, corsOrigin);
+    return;
+  }
+
+  // 6.7 POST /api/keys/test/tencent | /api/keys/test/deepseek
+  // 会话密钥连通性测试：任何登录用户可用自己的密钥测试（密钥随请求传入，仅本次使用）
+  // 与管理员端 /api/admin/keys/*/test（测服务器全局配置）互不冲突
+  if (method === 'POST' && (pathname === '/api/keys/test/tencent' || pathname === '/api/keys/test/deepseek')) {
+    const bodyResult = await parseJsonBody(req);
+    if (!bodyResult.ok) {
+      const payload = buildErrorResponse(ERROR_CODES.INVALID_JSON, bodyResult.error);
+      logRequest(method, pathname, 400, payload.traceId);
+      sendJson(res, 400, payload, corsOrigin);
+      return;
+    }
+    if (!requireApiToken(req, res, corsOrigin, pathname)) return;
+    const body = bodyResult.data || {};
+    const testResult = pathname === '/api/keys/test/tencent'
+      ? await testTencentOcrCredentials(body.secretId ? { secretId: body.secretId, secretKey: body.secretKey } : undefined)
+      : await testDeepSeekCredential(body.apiKey ? { apiKey: body.apiKey, model: body.model } : undefined);
+    const traceId = generateTraceId();
+    const payload = {
+      ok: testResult.ok,
+      service: 'session-keys-test',
+      status: 'success',
+      data: testResult,
+      message: testResult.message,
       traceId,
       timestamp: new Date().toISOString(),
     };
@@ -640,6 +755,10 @@ async function handleRequest(req, res) {
     '/api/deepseek/interpret',
     '/api/deepseek/questions',
     '/api/deepseek/risk',
+    '/api/deepseek/verify',
+    '/api/deepseek/voucher',
+    '/api/keys/test/tencent',
+    '/api/keys/test/deepseek',
   ];
   if (knownPaths.includes(pathname)) {
     // 路径存在但方法不对

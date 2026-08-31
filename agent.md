@@ -137,6 +137,15 @@ npm run validate      # 一键全验证
 - **vite 代理**：补 `/api/admin`（此前本地开发管理页密钥接口不可达）。
 - 验证口径：370 前端测试 + 构建 + 后端冒烟 85/85；本地与生产双端实测。
 
+### 4.8 会话密钥制 + AI 验真/凭证（2026-08-31）
+
+- **密钥模型变更（用户明确要求，隐私优先）**：SecretId/SecretKey/API Key 由每个用户自己在「接口配置」页填入，仅存浏览器 sessionStorage（按账户命名空间 `fapiao.sessionKeys.<userId>`），**关闭网站自动清除、可手动清除、服务器不落盘**。密钥随请求透传给后端（请求级凭据），后端用完即弃；优先级：请求凭据 > 服务器 .env > 加密存储（旧加密存储仅作可选兜底，生产已清空）。接口地址由后端代理固定，前端只读展示。
+- **前端**：`src/integrations/sessionKeyStore.ts`（sessionStorage 读写 + deepSeekCredentialBody()/tencentCredentialBody() 请求体片段，6 项测试）；`SessionKeysPanel.tsx`（替代 AdminKeysPanel，所有登录用户可用自己的密钥）；OCR/interpret/questions/risk/verify/voucher 六个调用点全部携带会话凭据。
+- **后端**：`tencentOcrClient`/`deepseekClient` 均接受 credentials 参数（格式校验后临时使用）；新增路由 `POST /api/keys/test/{tencent,deepseek}`（登录即可，测自己的会话密钥）、`POST /api/deepseek/verify`（AI 验真）、`POST /api/deepseek/voucher`（AI 凭证草稿）。
+- **AI 验真边界（诚实声明）**：DeepSeek 开放平台 API 无联网查询官方查验平台能力；实现为"确定性规则预检（号码位数 8/20、代码 10/12、日期区间、价税勾稽）+ DeepSeek 一致性核验"，结果标注"AI 辅助核验，非官方查验平台"；映射保守：规则硬伤→验真失败、AI 一致→验真通过、存疑/无法判断→待验真（不阻断流程）。提交表单时自动执行（handleStart 异步化，按钮显示"AI 核验中…"），无密钥时静默跳过。
+- **AI 凭证**：DeepSeek 生成借贷分录，后端强制借贷平衡校验（±0.05，至少 2 条）才返回；失败/未配置前端自动回退本地规则版（mockBuildVoucherDraft）；DecisionResultPage 显示来源徽标（AI 生成·借贷平衡已校验 / 本地规则生成）。
+- **遗留注意**：请求级密钥经 HTTP 明文传输（生产无 HTTPS），敏感度与发票图片同级；上 HTTPS 后此顾虑消除。旧的 /api/admin/keys/* 保存接口仍在（冒烟测试用）但 UI 已不使用。
+
 ## 5. 涉及文件索引
 
 - **流程页**：`src/ui/pages/InvoiceWorkflowPage.tsx`（证据补充任务卡片 + 详情弹层 + 风险报告）、`src/ui/pages/InvoiceIntakePage.tsx`（OCR 状态条 + 模拟降级）、`src/ui/pages/DecisionResultPage.tsx`

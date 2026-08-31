@@ -5,6 +5,7 @@
 // API 密钥仅保存在后端 .env，前端不接触密钥。
 import type { InvoiceCategory } from '../domain/types';
 import { authHeaders } from '../auth/authStorage';
+import { deepSeekCredentialBody } from '../integrations/sessionKeyStore';
 
 export interface DeepSeekOcrField {
   name: string;
@@ -41,7 +42,7 @@ export async function interpretInvoiceViaDeepSeek(
     const response = await fetch('/api/deepseek/interpret', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
-      body: JSON.stringify({ ocrFields, currentForm }),
+      body: JSON.stringify({ ocrFields, currentForm, ...deepSeekCredentialBody() }),
     });
     const text = await response.text();
     let result: { ok?: boolean; data?: DeepSeekInterpretData; message?: string } | null = null;

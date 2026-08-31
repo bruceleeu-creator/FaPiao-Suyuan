@@ -241,8 +241,8 @@ git remote add gitea http://49.232.160.7:3000/BruceLEEU/Fapiao-Suyuan.git
 - 服务器路径：后端 `/www/wwwroot/invoice-evidence/server`（入口 `start.mjs`），前端 `/www/wwwroot/invoice-evidence-web`，nginx vhost `/www/server/panel/vhost/nginx/invoice-evidence-web.conf`
 - 账户数据：`server/data/users.json`，每日 3 点自动备份至 `/www/backup`（保留 7 份）；业务数据在各用户浏览器 localStorage（按账户命名空间隔离，不上传服务器）
 - 更新发布：见第 9 节「代码仓库与发布方式」——推 GitHub main 自动 CI/CD 部署，推自建 Gitea 仅备份
-- 上线密钥（推荐网页方式）：管理员登录 →「接口配置」页直接填写 DeepSeek API Key 与腾讯云 SecretId/SecretKey，保存即生效（无需重启），并点「测试连接」发起一次最小真实调用验证密钥真实可用（区分 401 密钥无效 / 402 欠费 / AuthFailure 密钥被拒 / 超时）。备选：服务器 `server/.env` 填入同名变量（优先级低于网页配置）。
-- 故障排查：上传发票"没反应/卡住"时优先到「接口配置」页点「测试连接」——密钥未配置或无效时 OCR 会静默失败，页面顶部不会自动提示根因。
+- 上线密钥（**会话密钥制，2026-08-31 起**）：每个用户登录后在「接口配置」页填入自己的密钥——仅存于浏览器 sessionStorage（关闭网站自动清除，可随时手动清除），**服务器不保存任何用户密钥**；「启用并验证」自动发起一次最小真实调用确认密钥可用（区分 401 无效 / 402 欠费 / AuthFailure 被拒 / 超时）。接口地址由后端代理固定（ocr.tencentcloudapi.com / api.deepseek.com），无需填写。验真与凭证草稿由 DeepSeek 实现（AI 辅助核验 + AI 分录生成，均标注非官方结果并有本地规则回退），无需任何额外配置。备选：管理员可在服务器 `server/.env` 配置全局兜底密钥（仅在请求未携带会话密钥时生效）。
+- 故障排查：上传发票"没反应/卡住"时优先到「接口配置」页看服务总览——任一服务"未配置/验证失败"，识别与 AI 能力就不会真实生效；填入密钥并验证通过即可恢复。
 
 ## 11. 产品边界与一期范围
 

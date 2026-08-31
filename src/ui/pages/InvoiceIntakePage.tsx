@@ -5,6 +5,7 @@ import type { IntakeForm, InvoiceCategory } from '../../domain/types';
 import { mockOcrRecognize } from '../../ai/mockOcrService';
 import { authHeaders } from '../../auth/authStorage';
 import { useAuth } from '../../auth/AuthContext';
+import { tencentCredentialBody, deepSeekCredentialBody } from '../../integrations/sessionKeyStore';
 import { classifyCategoryByRules } from '../../ai/categoryRules';
 import { interpretInvoiceViaDeepSeek, type DeepSeekOcrField } from '../../ai/deepSeekInterpreter';
 import { useWorkflow } from '../../workflow/WorkflowContext';
@@ -450,7 +451,8 @@ export function InvoiceIntakePage() {
       const response = await fetch('/api/tencent/ocr/invoice', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify({ imageBase64: base64, isPdf }),
+        // 携带会话密钥（用户在「接口配置」页填入，仅存浏览器会话）；未填时后端回退服务器配置
+        body: JSON.stringify({ imageBase64: base64, isPdf, ...tencentCredentialBody() }),
         // 超时兜底：真实 OCR 大图耗时较长，30s 后按后端不可达处理并回退模拟
         signal: AbortSignal.timeout(30000),
       });
@@ -529,7 +531,50 @@ export function InvoiceIntakePage() {
     }
   };
 
-  const handleStart = () => {
+  // AI 核验（DeepSeek）：票面规则 + 一致性核验；失败/未配置不阻断，保持原状态
+  // 返回 mappedStatus 仅在核验真实完成时使用（验真通过 / 待验真 / 验真失败）
+  async function runAiVerify(invoiceForm: IntakeForm): Promise<{ status?: '验真通过' | '待验真' | '验真失败'; hint: string }> {
+    if (!backendOnline) return { hint: '' };
+    try {
+      const response = await fetch('/api/deepseek/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({
+          invoice: {
+            invoiceType: invoiceForm.invoiceType,
+            invoiceCode: invoiceForm.invoiceCode,
+            invoiceNumber: invoiceForm.invoiceNumber,
+            issueDate: invoiceForm.issueDate,
+            seller: invoiceForm.seller,
+            buyer: invoiceForm.buyer,
+            itemName: invoiceForm.itemName,
+            amount: invoiceForm.amount,
+            taxAmount: invoiceForm.taxAmount,
+            totalAmount: invoiceForm.totalAmount,
+            taxRate: invoiceForm.taxRate,
+          },
+          ...deepSeekCredentialBody(),
+        }),
+        signal: AbortSignal.timeout(25000),
+      });
+      const result = await response.json().catch(() => null);
+      if (result?.ok && result.data) {
+        const d = result.data as { mappedStatus?: '验真通过' | '待验真' | '验真失败'; conclusion?: string; disclaimer?: string };
+        return {
+          status: d.mappedStatus,
+          hint: `AI 辅助核验：${d.conclusion || '完成'}（${d.disclaimer || '非官方查验平台结果'}）`,
+        };
+      }
+      // not_configured / failed：不提示错误（模拟模式下静默保持原状态）
+      return { hint: '' };
+    } catch {
+      return { hint: 'AI 核验超时或失败，发票按原验真状态继续。' };
+    }
+  }
+
+  const [verifying, setVerifying] = useState(false);
+
+  const handleStart = async () => {
     if (ocrStatus === 'loading') {
       setError('正在调用腾讯云 OCR，请稍候...');
       return;
@@ -547,13 +592,25 @@ export function InvoiceIntakePage() {
       }
     }
     setError('');
+    // 提交前 AI 核验（DeepSeek 可用时）：几秒内完成，结果写入发票验真状态
+    let verifyStatus: '验真通过' | '待验真' | '验真失败' | undefined;
+    let verifyHint = '';
+    if (backendOnline) {
+      setVerifying(true);
+      const v = await runAiVerify(form);
+      verifyStatus = v.status;
+      verifyHint = v.hint;
+      setVerifying(false);
+    }
     const invoice = mockOcrRecognize(form);
+    if (verifyStatus) invoice.verificationStatus = verifyStatus;
     // 如果用户上传了文件，记录真实 OCR 来源（保留验真状态字段）
     if (selectedFile) {
       invoice.sourceFile = `tencent://ocr/uploaded-${selectedFile.name}`;
     }
     // 生成独立 caseId 并持久化到 localStorage
     const caseId = startSession(invoice);
+    if (verifyHint) setFilledHint(verifyHint);
     // 跳转到该 case 的专属流程页
     navigate(`/invoices/${caseId}/workflow`);
   };
@@ -925,8 +982,8 @@ export function InvoiceIntakePage() {
       {error && <div className="intake-error" role="alert">{error}</div>}
 
       <div className="intake-actions">
-        <button type="button" className="primary-button" onClick={handleStart}>
-          提交表单
+        <button type="button" className="primary-button" onClick={() => void handleStart()} disabled={verifying}>
+          {verifying ? 'AI 核验中…' : '提交表单'}
         </button>
         <span className="mock-badge">验真 / 查重：内置通道</span>
       </div>

@@ -310,7 +310,7 @@ async function runSmokeTests() {
 
   // 9. OCR 响应分类回归：腾讯云以 HTTP 200 + Response.Error 返回鉴权/业务错误
   //    （曾因此把密钥错误误判为识别成功，前端拿到空数据表现为"导入无反应"）
-  console.log('[9/9] OCR 响应分类 classifyOcrApiResponse');
+  console.log('[9/10] OCR 响应分类 classifyOcrApiResponse');
   {
     const authFail = classifyOcrApiResponse(200, {
       Response: { Error: { Code: 'AuthFailure.SecretIdNotFound', Message: 'The SecretId is not found.' } },
@@ -330,6 +330,56 @@ async function runSmokeTests() {
 
     const httpErr = classifyOcrApiResponse(500, null);
     assert('HTTP 5xx 判定为失败', httpErr.ok === false && String(httpErr.message).includes('500'));
+  }
+  console.log('');
+
+  // 10. 会话密钥制接口：请求级凭据测试 + AI 验真/凭证（未配置时 not_configured，不打真实外网）
+  console.log('[10/10] 会话密钥 /api/keys/test/* 与 /api/deepseek/verify|voucher');
+  {
+    // 未带令牌 → 401
+    const noAuth = await fetch(`http://${DEFAULT_HOST}:${resolveBackendPort()}/api/keys/test/tencent`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    assert('会话密钥测试无令牌返回 401', noAuth.status === 401, `实际: ${noAuth.status}`);
+
+    // 登录用户 + 无凭据 → 结构化结果（注：第 8 段可能已向临时库存入假密钥，
+    // 此时回退服务器配置发起真实调用，返回 auth_failed/timeout 均属预期链路行为）
+    const tcTest = await callEndpoint('POST', '/api/keys/test/tencent', {});
+    assert('腾讯云会话测试返回 200', tcTest.status === 200, `实际: ${tcTest.status}`);
+    assert('腾讯云会话测试返回结构化状态', typeof tcTest.json?.data?.status === 'string' && tcTest.json.data.status.length > 0, `实际: ${tcTest.json?.data?.status}`);
+    assert('腾讯云会话测试包含 message', typeof tcTest.json?.message === 'string' && tcTest.json.message.length > 0);
+
+    const dsTest = await callEndpoint('POST', '/api/keys/test/deepseek', {});
+    assert('DeepSeek 会话测试返回结构化状态', typeof dsTest.json?.data?.status === 'string' && dsTest.json.data.status.length > 0, `实际: ${dsTest.json?.data?.status}`);
+
+    // 携带格式合法的假凭据 → 发起真实调用并返回鉴权失败（外网可达时 AuthFailure；不可达时超时/错误，两者都算链路通）
+    const fakePair = await callEndpoint('POST', '/api/keys/test/tencent', {
+      secretId: `AKID${'b'.repeat(32)}`,
+      secretKey: 'c'.repeat(32),
+    });
+    assert('携带会话凭据测试返回结构化结果', typeof fakePair.json?.data?.status === 'string' && fakePair.json.data.status !== 'not_configured', `实际: ${fakePair.json?.data?.status}`);
+
+    // AI 验真：无会话密钥时回退服务器配置（第 8 段假密钥）→ not_configured 或真实调用失败，均证明路由通
+    const verify = await callEndpoint('POST', '/api/deepseek/verify', {
+      invoice: { invoiceNumber: '10012001', invoiceCode: '044002600111', issueDate: '2026-07-12', amount: 100, taxAmount: 6, totalAmount: 106 },
+    });
+    assert('AI 验真返回 200 且结构化', verify.status === 200 && ['not_configured', 'failed'].includes(verify.json?.status), `实际: ${verify.status}/${verify.json?.status}`);
+
+    // AI 验真：确定性规则硬伤（发票号 5 位）不需要密钥即可出结论 → 验真失败
+    const verifyRule = await callEndpoint('POST', '/api/deepseek/verify', {
+      invoice: { invoiceNumber: '12345', amount: 100, taxAmount: 6, totalAmount: 106 },
+    });
+    assert('规则硬伤走确定性分支返回验真失败', verifyRule.json?.data?.mappedStatus === '验真失败', `实际: ${verifyRule.json?.data?.mappedStatus}`);
+    assert('规则核验返回 findings', Array.isArray(verifyRule.json?.data?.findings) && verifyRule.json.data.findings.length > 0);
+
+    // AI 凭证：无会话密钥 → not_configured 或回退假密钥失败（前端回退本地规则）
+    const voucher = await callEndpoint('POST', '/api/deepseek/voucher', {
+      invoice: { invoiceNumber: '10012001', amount: 100, taxAmount: 6, totalAmount: 106, invoiceType: '增值税普通发票' },
+      decision: { voucherDraft: { status: '可生成', summary: '' }, accountingConclusion: '建议计入管理费用' },
+    });
+    assert('AI 凭证返回结构化状态', ['not_configured', 'failed'].includes(voucher.json?.status), `实际: ${voucher.json?.status}`);
   }
   console.log('');
 

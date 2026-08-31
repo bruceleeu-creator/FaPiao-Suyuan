@@ -13,6 +13,17 @@
 import https from 'node:https';
 import { createHash, createHmac, randomInt } from 'node:crypto';
 import { getEffectiveTencentCredentials } from './tencentProxyConfig.mjs';
+import { validateSecretId, validateSecretKey } from './tencentCredentialStore.mjs';
+
+// 请求级凭据校验：格式合法才启用（用户会话密钥随请求传入，不落盘）
+function validateCredentialPair(credentials) {
+  if (!credentials || typeof credentials !== 'object') return null;
+  const { secretId, secretKey } = credentials;
+  if (validateSecretId(secretId) && validateSecretKey(secretKey)) {
+    return { secretId, secretKey, source: 'request' };
+  }
+  return null;
+}
 
 const OCR_HOST = 'ocr.tencentcloudapi.com';
 const OCR_SERVICE = 'ocr';
@@ -63,10 +74,9 @@ function buildAuthorization({ secretId, secretKey, payload, timestamp, date }) {
   return `TC3-HMAC-SHA256 Credential=${secretId}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
 }
 
-function requestOcr(payload) {
+function requestOcr(payload, creds) {
   const timestamp = Math.floor(Date.now() / 1000);
   const date = new Date(timestamp * 1000).toISOString().slice(0, 10);
-  const creds = getEffectiveTencentCredentials();
   const body = JSON.stringify(payload);
   const authorization = buildAuthorization({
     secretId: creds.secretId,
@@ -151,13 +161,16 @@ export function classifyOcrApiResponse(statusCode, json) {
 
 // 识别增值税发票
 // 入参：imageBase64 或 imageUrl 至少提供一个
-export async function recognizeVatInvoice({ imageBase64, imageUrl, isPdf, pdfPageNumber } = {}) {
-  const creds = getEffectiveTencentCredentials();
-  if (creds.source === 'none') {
+// credentials（可选）：请求级密钥 {secretId, secretKey}——用户会话密钥随请求传入，
+// 仅本次调用使用、不落盘；缺省时回退服务器配置（加密存储 > 环境变量）
+export async function recognizeVatInvoice({ imageBase64, imageUrl, isPdf, pdfPageNumber, credentials } = {}) {
+  const requestCreds = validateCredentialPair(credentials);
+  const creds = requestCreds || getEffectiveTencentCredentials();
+  if (creds.source === 'none' && !requestCreds) {
     return {
       ok: false,
       status: 'not_configured',
-      message: '腾讯云 OCR 尚未配置 SecretId/SecretKey，无法发起真实调用。',
+      message: '尚未配置腾讯云密钥：请在「接口配置」页填入 SecretId/SecretKey（仅存于当前浏览器会话），或由管理员配置服务器全局密钥。',
     };
   }
 
@@ -178,7 +191,7 @@ export async function recognizeVatInvoice({ imageBase64, imageUrl, isPdf, pdfPag
   }
 
   try {
-    const response = await requestOcr(payload);
+    const response = await requestOcr(payload, creds);
     const classified = classifyOcrApiResponse(response.statusCode, response.json);
     if (classified.ok) {
       return {
@@ -219,17 +232,17 @@ export async function recognizeVatInvoice({ imageBase64, imageUrl, isPdf, pdfPag
 const TINY_PNG_BASE64 =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
 
-export async function testTencentOcrCredentials() {
-  const creds = getEffectiveTencentCredentials();
-  if (creds.source === 'none') {
+export async function testTencentOcrCredentials(credentials) {
+  const requestCreds = validateCredentialPair(credentials);
+  if (!requestCreds && getEffectiveTencentCredentials().source === 'none') {
     return {
       ok: false,
       status: 'not_configured',
-      message: '尚未保存腾讯云密钥，请先填写 SecretId/SecretKey 并保存。',
+      message: '尚未提供腾讯云密钥：请填写 SecretId/SecretKey 后再验证。',
     };
   }
 
-  const result = await recognizeVatInvoice({ imageBase64: TINY_PNG_BASE64 });
+  const result = await recognizeVatInvoice({ imageBase64: TINY_PNG_BASE64, credentials });
   if (result.ok) {
     return { ok: true, status: 'success', message: '腾讯云密钥有效，OCR 调用成功。' };
   }
