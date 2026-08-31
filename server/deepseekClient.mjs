@@ -53,7 +53,7 @@ function resolveConfig(credentials) {
 // 调用 DeepSeek chat completions
 // reasoningEffort：'low' 等档位可大幅缩短推理模型的思考时间（交互场景必须传），
 // 不传则使用模型默认（深度思考，耗时 30-60s+，仅适合离线任务）
-async function callDeepSeekChat(messages, { maxTokens, timeoutMs, reasoningEffort, credentials }) {
+async function callDeepSeekChat(messages, { maxTokens, timeoutMs, reasoningEffort, credentials, jsonMode }) {
   const { apiKey, model } = resolveConfig(credentials);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -70,6 +70,9 @@ async function callDeepSeekChat(messages, { maxTokens, timeoutMs, reasoningEffor
         max_tokens: maxTokens,
         stream: false,
         ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
+        // DeepSeek 官方 JSON Output（api-docs.deepseek.com/guides/json_mode）：
+        // 强制合法 JSON 字符串；要求提示词中包含 "json" 字样并给出输出示例
+        ...(jsonMode ? { response_format: { type: 'json_object' } } : {}),
       }),
       signal: controller.signal,
     });
@@ -157,76 +160,154 @@ export async function testDeepSeekCredential(credentials) {
 // 边界（诚实声明）：DeepSeek 开放平台 API 不提供联网查询官方查验平台的能力，
 // 本功能为「票面规则确定性核验 + AI 语义一致性核验」，结果标注为 AI 辅助，
 // 不等同于全国增值税发票查验平台的权威验真；存疑一律交人工，不硬失败。
-// 确定性预检（规则引擎职责，AI 之前执行）：
-//   - 发票号码：8 位（传统）或 20 位（全电）数字
-//   - 发票代码：10/12 位数字（全电发票可无代码）
-//   - 日期：不晚于今天，不早于 5 年前
-//   - 勾稽：|amount × taxRate − taxAmount| ≤ 0.05 且 total = amount + taxAmount（±0.05）
+//
+// 确定性预检规则（全部有官方出处，详见 docs/验真与凭证规则设计.md）：
+//   [税总公告] 数电发票号码 20 位：1-2 年度、3-4 省级区域代码、5 渠道、6-20 顺序编码，
+//             无校验码、无发票代码（来源：国家税务总局关于推广应用全面数字化电子发票的公告）
+//   [税总公告] 电子专票发票代码 12 位：第 1 位 0，2-5 省市，6-7 年度，8-10 批次，11-12 位票种（电子专票=13），
+//             发票号码 8 位按年度分批次编制（来源：国家税务总局公告 2020 年第 22 号附件）
+//   [票种识别] 10 位发票代码第 8 位为 1/2/5/7 → 增值税专用发票（行业通行规则）
+//   [查验要素] 官方查验平台以 发票号码+开票日期+价税合计 为要素（inv-veri.chinatax.gov.cn）
 function deterministicPreCheck(invoice = {}) {
   const findings = [];
   let hardFail = false;
+  const warn = (msg) => findings.push(msg);
+  const fail = (msg) => {
+    findings.push(msg);
+    hardFail = true;
+  };
+
   const number = String(invoice.invoiceNumber || '').trim();
   const code = String(invoice.invoiceCode || '').trim();
+  const invoiceType = String(invoice.invoiceType || '').trim();
+  const isSpecialVat = invoiceType.includes('专') || invoiceType.includes('专用发票');
+  const isDigital = /^\d{20}$/.test(number);
+  const isTaxControl = /^\d{8}$/.test(number);
+
+  // --- 发票号码位数 ---
   if (!number) {
-    findings.push('缺少发票号码，无法核验。');
-    hardFail = true;
-  } else if (!/^\d{8}$|^\d{20}$/.test(number)) {
-    findings.push(`发票号码位数异常（${number.length} 位）：应为 8 位（传统发票）或 20 位（全电发票）。`);
-    hardFail = true;
+    fail('缺少发票号码，无法核验。');
+  } else if (!isDigital && !isTaxControl) {
+    fail(`发票号码位数异常（${number.length} 位）：应为 8 位（税控发票）或 20 位（数电发票）。`);
   }
-  if (code && !/^\d{10}$|^\d{12}$/.test(code)) {
-    findings.push(`发票代码位数异常（${code.length} 位）：应为 10 或 12 位（全电发票可无代码）。`);
-    hardFail = true;
+
+  // --- 数电票（20 位）专项 ---
+  if (isDigital) {
+    if (code) {
+      warn('数电发票（20 位号码）不应再有发票代码：票面同时出现 20 位号码与发票代码属于版式矛盾，请核对是否混录。');
+    }
+    const yy = number.slice(0, 2);
+    const dateYear = extractIssueYear(invoice.issueDate);
+    if (dateYear && yy !== dateYear) {
+      fail(`数电发票号码年度位与开票日期矛盾：号码前两位 ${yy} 应等于开票年份后两位 ${dateYear}。`);
+    }
+    const region = Number(number.slice(2, 4));
+    // 省级税务局区域代码落在常见行政区划代码区间之外时提示（不硬伤：区间存在调整可能）
+    if (!(region >= 11 && region <= 82)) {
+      warn(`数电发票号码第 3-4 位（${number.slice(2, 4)}）不在省级税务局区域代码常见区间（11-82）内，建议人工核对。`);
+    }
   }
+
+  // --- 税控发票代码（10/12 位）专项 ---
+  if (code) {
+    if (!/^\d{10}$|^\d{12}$/.test(code)) {
+      fail(`发票代码位数异常（${code.length} 位）：应为 10 或 12 位。`);
+    } else if (/^\d{12}$/.test(code)) {
+      if (code[0] !== '0') {
+        fail(`12 位发票代码首位应为 0（实际 ${code[0]}）：与电子发票编码规则不符。`);
+      }
+      const codeYear = code.slice(5, 7);
+      const dateYear = extractIssueYear(invoice.issueDate);
+      if (dateYear && codeYear !== dateYear) {
+        fail(`发票代码年度位与开票日期矛盾：代码第 6-7 位 ${codeYear} 应等于开票年份后两位 ${dateYear}。`);
+      }
+      // 代码第 11-12 位 = 13 → 电子专票；与票种字段交叉
+      const species = code.slice(10, 12);
+      if (species === '13' && number.length === 8 && !isSpecialVat && invoiceType) {
+        warn(`发票代码票种位为 13（电子专票）但票面类型为「${invoiceType}」：票种与代码不一致，请核对。`);
+      }
+    } else if (/^\d{10}$/.test(code)) {
+      // 10 位代码第 8 位 ∈ {1,2,5,7} → 专票
+      const digit8 = code[7];
+      if (['1', '2', '5', '7'].includes(digit8) && !isSpecialVat && invoiceType) {
+        warn(`10 位发票代码第 8 位为 ${digit8}（专票特征）但票面类型为「${invoiceType}」：票种与代码不一致，请核对。`);
+      }
+    }
+    if (isDigital) {
+      // 已在数电分支提示过
+    }
+  }
+
+  // --- 开票日期 ---
   const date = String(invoice.issueDate || '').trim();
   if (date) {
     const parsed = new Date(date);
     const now = new Date();
     const fiveYearsAgo = new Date(now.getFullYear() - 5, now.getMonth(), now.getDate());
     if (Number.isNaN(parsed.getTime())) {
-      findings.push('开票日期格式无法解析。');
-      hardFail = true;
+      fail('开票日期格式无法解析。');
     } else if (parsed > now) {
-      findings.push('开票日期晚于今天（未来日期发票）。');
-      hardFail = true;
+      fail('开票日期晚于今天（未来日期发票）。');
     } else if (parsed < fiveYearsAgo) {
-      findings.push('开票日期早于五年前，超出常规核验范围。');
+      warn('开票日期早于五年前，超出常规核验范围。');
     }
+  } else {
+    warn('缺少开票日期，无法做年度一致性交叉校验。');
   }
+
+  // --- 价税勾稽（官方查验要素之一） ---
   const amount = Number(invoice.amount) || 0;
   const taxAmount = Number(invoice.taxAmount) || 0;
   const total = Number(invoice.totalAmount) || 0;
   if (amount > 0 && taxAmount >= 0 && total > 0) {
     if (Math.abs(amount + taxAmount - total) > 0.05) {
-      findings.push(`价税勾稽不符：金额 ${amount} + 税额 ${taxAmount} ≠ 价税合计 ${total}。`);
-      hardFail = true;
+      fail(`价税勾稽不符：金额 ${amount} + 税额 ${taxAmount} ≠ 价税合计 ${total}。`);
+    }
+  } else if (total <= 0) {
+    warn('缺少价税合计，无法完成官方查验要素（号码+日期+价税合计）比对。');
+  }
+
+  // --- 税率合理集合（增值税现行税率） ---
+  const rate = String(invoice.taxRate || '').trim();
+  if (rate) {
+    const normalized = rate.replace('%', '');
+    const known = ['0', '1', '3', '5', '6', '9', '13', '0.01', '0.03', '0.05', '0.06', '0.09', '0.13'];
+    if (!known.includes(normalized) && !/免[税征]|不征税/.test(rate)) {
+      warn(`税率「${rate}」不在增值税现行税率集合（0/1%/3%/5%/6%/9%/13%/免税）内，请核对。`);
     }
   }
+
   return { findings, hardFail };
 }
 
-const VERIFY_SYSTEM_PROMPT = `你是增值税发票票面核验助手。基于给定的票面字段做一致性核验（无法联网查询官方平台，结论只基于票面内部逻辑）。检查维度：
-1. 票种与税率匹配（如餐饮服务 6%、农产品 9%、13% 货物等明显错配）
-2. 项目名称/类别与销方经营范围的语义合理性
-3. 购销方名称、开票日期与票种年代的一致性（如全电发票不应有 10 位代码）
-4. 金额字段间的勾稽（若未通过确定性预检会另外标注）
-资料不足或无法判断时如实输出"无法判断"，不得臆造。
+// 从开票日期提取年份后两位（支持 YYYY-MM-DD 与 YYYY年MM月DD日）
+function extractIssueYear(issueDate) {
+  const m = /(\d{4})/.exec(String(issueDate || ''));
+  return m ? m[1].slice(2) : null;
+}
 
-只输出一个 JSON 对象，禁止 markdown：
-{"conclusion":"一致"|"存疑"|"无法判断","findings":["具体发现，每条引用票面事实"],"advice":"给核验人员的一句话建议"}`;
+// 验真提示词：角色→规则→输出 schema→禁止事项→拒答出口（DeepSeek 官方 JSON mode 配套要求：
+// 提示词含 "json" 字样 + 给出输出示例；结论枚举封闭，防止模型自由发挥）
+const VERIFY_SYSTEM_PROMPT = `你是增值税发票票面核验助手。你只能基于给定票面字段做内部一致性与常识核验——你无法联网查询官方查验平台，结论只反映票面逻辑是否自洽。
+
+【核验范围（仅此四类，逐项检查）】
+1. 票种与税率匹配：餐饮/住宿/租赁等现代服务业适用 6%，货物运输/不动产租赁 9%，货物销售 13%，农产品 9%/免税；明显错配才算发现（如"餐饮服务 13%"）。
+2. 项目名称与销方/类别的语义合理性：如销方为"XX科技有限公司"而项目为"住宿服务"，需提示核对（措辞用"建议核对"，不定性为异常）。
+3. 票种年代一致性：数电发票（20 位号码、无代码）不应出现"税控发票代码"表述；12 位代码第 11-12 位为 13 属电子专票，应与票面类型一致。
+4. 金额勾稽复核（确定性预检已算过一遍，你只做补充复核，不要重复报告预检已列明的算术结果）。
+
+【硬性纪律】
+- 不得编造票面上不存在的字段值；不得推测发票真伪——你只能给出"票面内部是否自洽"的结论。
+- 任何无法从给定字段判断的维度，直接跳过，不写入 findings。
+- findings 每条必须引用具体字段值（如"税率 13% 与项目'餐饮服务'不匹配"），禁止空泛表述（如"存在风险"）。
+- conclusion 只能取枚举值：一致 / 存疑 / 无法判断。字段齐全且未发现矛盾才可输出"一致"；有矛盾但不足以定性用"存疑"；关键字段缺失用"无法判断"。
+
+【输出格式】只输出一个 JSON 对象，禁止 markdown 代码块和任何其他文字，结构示例：
+{"conclusion":"一致","findings":["税率 6% 与项目'住宿服务'匹配"],"advice":"票面自洽，可进入后续流程"}`;
 
 export async function verifyInvoiceByAi({ invoice, credentials }) {
-  const config = resolveConfig(credentials);
-  if (!config.configured) {
-    return {
-      ok: false,
-      status: 'not_configured',
-      message: 'AI 核验需要 DeepSeek 密钥：请在「接口配置」页填入（仅存于当前浏览器会话）。',
-    };
-  }
-
+  // 确定性预检先行（规则免费且不依赖任何密钥）：硬伤直接出结论，不消耗 AI 调用
   const pre = deterministicPreCheck(invoice);
-  // 确定性硬伤直接出结论，不消耗 AI 调用
   if (pre.hardFail) {
     return {
       ok: true,
@@ -242,16 +323,48 @@ export async function verifyInvoiceByAi({ invoice, credentials }) {
     };
   }
 
+  const config = resolveConfig(credentials);
+  if (!config.configured) {
+    // AI 未配置：规则提示级发现仍然带回（结论保守为无法判断），不静默吞掉
+    return {
+      ok: false,
+      status: 'not_configured',
+      message: 'AI 核验需要 DeepSeek 密钥：请在「接口配置」页填入（仅存于当前浏览器会话）。',
+      data: {
+        conclusion: '无法判断',
+        mode: 'rule',
+        findings: pre.findings,
+        advice: '确定性规则未发现硬伤；AI 语义核验需配置 DeepSeek 密钥。',
+        disclaimer: 'AI 辅助核验（票面一致性），非官方查验平台结果。',
+        mappedStatus: '待验真',
+      },
+    };
+  }
+
   const userContent = `发票票面字段：\n${JSON.stringify(invoice || {}, null, 0)}\n\n确定性预检发现（供参考）：${pre.findings.length ? pre.findings.join('；') : '无'}`;
   const result = await callDeepSeekChat(
     [
       { role: 'system', content: VERIFY_SYSTEM_PROMPT },
       { role: 'user', content: userContent },
     ],
-    { maxTokens: 2000, timeoutMs: 30000, reasoningEffort: 'low', credentials },
+    { maxTokens: 2000, timeoutMs: 30000, reasoningEffort: 'low', credentials, jsonMode: true },
   );
   if (!result.ok) {
-    return { ok: false, status: 'failed', message: result.message };
+    // AI 不可用（未配置/欠费/超时等）：确定性预检的提示级发现仍然有效，随失败结果带回，
+    // 结论保守为"无法判断"（不映射验真失败），由调用方决定是否展示
+    return {
+      ok: false,
+      status: result.status || 'failed',
+      message: result.message,
+      data: {
+        conclusion: '无法判断',
+        mode: 'rule',
+        findings: pre.findings,
+        advice: 'AI 核验暂不可用；以下为确定性规则预检结果。',
+        disclaimer: 'AI 辅助核验（票面一致性），非官方查验平台结果。',
+        mappedStatus: '待验真',
+      },
+    };
   }
   const jsonText = extractJsonObject(result.content);
   if (!jsonText) {
@@ -294,14 +407,37 @@ export async function verifyInvoiceByAi({ invoice, credentials }) {
 // ============ AI 凭证草稿生成（替代凭证接口配置）============
 // 与本地规则版（前端 mockBuildVoucherDraft）同样的铁律：只生成草稿、不自动过账、
 // 高风险阻断案例拒绝生成；AI 失败时前端回退本地规则版
-const VOUCHER_SYSTEM_PROMPT = `你是会计凭证草稿助手。基于发票票面、费用类别与入账建议生成会计凭证草稿。规则：
-1. 借贷必须平衡：借方合计 = 贷方合计 = 价税合计（专票：借费用=不含税金额、借进项税=税额；普票：借费用=价税合计）。
-2. 贷方科目：员工报销场景用"其他应付款-员工报销"，对公付款用"银行存款"。
-3. 科目路径沿用建议的一级/二级/三级科目，不得虚构科目。
-4. 只输出草稿，绝不建议自动过账。
+// 凭证提示词：受控科目词表（防止模型自造科目）+ 借贷平衡铁律 + 资料不足拒答出口。
+// 科目依据《企业会计准则》常用费用科目与项目八类发票映射（详见 docs/验真与凭证规则设计.md）
+const VOUCHER_ALLOWED_ACCOUNTS = [
+  '管理费用-业务招待费', '销售费用-业务招待费', '管理费用-职工福利费',
+  '管理费用-差旅费', '销售费用-差旅费',
+  '管理费用-车辆使用费', '管理费用-办公费', '管理费用-咨询顾问费',
+  '销售费用-广告宣传费', '管理费用-租赁费', '销售费用-租赁费',
+];
+const VOUCHER_ALLOWED_CREDITS = ['其他应付款-员工报销', '银行存款', '库存现金'];
+const VOUCHER_TAX_ACCOUNT = '应交税费-应交增值税-进项税额';
 
-只输出一个 JSON 对象，禁止 markdown：
-{"summary":"一句话分录说明","entries":[{"direction":"借"|"贷","account":"科目路径","amount":数字}],"note":"草稿备注（人工复核提示）"}`;
+const VOUCHER_SYSTEM_PROMPT = `你是会计凭证草稿生成器，严格按借贷记账法（法定记账方法）生成费用报销凭证草稿。
+
+【科目白名单（借方费用科目只能从中选择；若入账建议已给出科目路径则优先沿用）】
+${VOUCHER_ALLOWED_ACCOUNTS.join(' / ')}
+
+【贷方科目枚举（只能取以下之一）】
+${VOUCHER_ALLOWED_CREDITS.join(' / ')}
+
+【分录铁律（违反任何一条即输出 insufficient）】
+1. 借贷平衡：借方合计 = 贷方合计。专票（票种含"专"）：借费用=不含税金额、借${VOUCHER_TAX_ACCOUNT}=税额、贷方=价税合计；普票：借费用=价税合计、贷方=价税合计。
+2. 金额只能取自给定字段（amount/taxAmount/totalAmount），禁止计算出新金额、禁止四舍五入到整数、禁止编造。
+3. 借方费用科目必须与发票类别的常见映射一致（餐饮招待→业务招待费；出差住宿/交通→差旅费；办公→办公费；咨询→咨询顾问费；广告推广→广告宣传费；租赁→租赁费；车辆相关→车辆使用费）。类别与科目明显矛盾时输出 insufficient 并在 note 说明。
+4. 只生成草稿，summary 不得出现"过账""入账完成"等表述。
+5. 若发票号码、价税合计、发票类别任一缺失，或金额≤0，输出 insufficient——不得凭猜测生成分录。
+
+【输出格式】只输出一个 JSON 对象，禁止 markdown 代码块和任何其他文字。
+正常输出示例：
+{"summary":"餐饮费报销","entries":[{"direction":"借","account":"管理费用-业务招待费","amount":580},{"direction":"贷","account":"其他应付款-员工报销","amount":580}],"note":"草稿需财务复核"}
+资料不足时输出示例：
+{"insufficient":true,"note":"缺少价税合计，无法生成分录"}`;
 
 export async function buildVoucherDraftByAi({ invoice, decision, credentials }) {
   const config = resolveConfig(credentials);
@@ -319,7 +455,7 @@ export async function buildVoucherDraftByAi({ invoice, decision, credentials }) 
       { role: 'system', content: VOUCHER_SYSTEM_PROMPT },
       { role: 'user', content: userContent },
     ],
-    { maxTokens: 2500, timeoutMs: 30000, reasoningEffort: 'low', credentials },
+    { maxTokens: 2500, timeoutMs: 30000, reasoningEffort: 'low', credentials, jsonMode: true },
   );
   if (!result.ok) {
     return { ok: false, status: 'failed', message: result.message };
@@ -335,12 +471,21 @@ export async function buildVoucherDraftByAi({ invoice, decision, credentials }) 
     return { ok: false, status: 'bad_response', message: 'DeepSeek 返回的 JSON 无法解析。' };
   }
 
+  // 模型按纪律主动拒答（资料不足）：尊重并回退本地规则，不硬造分录
+  if (parsed.insufficient === true) {
+    return {
+      ok: false,
+      status: 'insufficient',
+      message: typeof parsed.note === 'string' && parsed.note ? `AI 拒绝生成分录：${parsed.note}` : 'AI 判定资料不足，拒绝生成分录（回退本地规则）。',
+    };
+  }
+
   const entries = Array.isArray(parsed.entries)
     ? parsed.entries
         .filter((e) => e && (e.direction === '借' || e.direction === '贷') && typeof e.account === 'string' && e.account.trim() && Number.isFinite(Number(e.amount)) && Number(e.amount) > 0)
         .map((e) => ({ direction: e.direction, account: e.account.trim(), amount: Math.round(Number(e.amount) * 100) / 100 }))
     : [];
-  // 质量闸：至少 2 条分录且借贷平衡（±0.05），否则拒绝并让前端回退本地规则
+  // 质量闸 1：至少 2 条分录且借贷平衡（±0.05），否则拒绝并让前端回退本地规则
   const debit = entries.filter((e) => e.direction === '借').reduce((s, e) => s + e.amount, 0);
   const credit = entries.filter((e) => e.direction === '贷').reduce((s, e) => s + e.amount, 0);
   if (entries.length < 2 || Math.abs(debit - credit) > 0.05) {
@@ -348,6 +493,41 @@ export async function buildVoucherDraftByAi({ invoice, decision, credentials }) 
       ok: false,
       status: 'unbalanced',
       message: 'AI 生成的分录借贷不平衡，已拒绝（回退本地规则生成）。',
+    };
+  }
+
+  // 质量闸 2：科目白名单后置校验（纵深防御，防模型自造科目）——
+  // 允许：白名单费用科目 / 贷方枚举 / 进项税科目 / 决策建议已给出的科目路径
+  const adviceAccounts = new Set();
+  if (decision && typeof decision === 'object') {
+    const pa = decision.postingAdvice || {};
+    [pa.primaryAccount, pa.secondaryAccount, pa.detailAccount].filter(Boolean).forEach((a) => adviceAccounts.add(String(a)));
+    // 组合路径（一级/二级/三级）
+    const path = [pa.primaryAccount, pa.secondaryAccount, pa.detailAccount].filter(Boolean).join('/');
+    if (path) adviceAccounts.add(path);
+  }
+  const allowed = new Set([...VOUCHER_ALLOWED_ACCOUNTS, ...VOUCHER_ALLOWED_CREDITS, VOUCHER_TAX_ACCOUNT, ...adviceAccounts]);
+  const illegal = entries.filter((e) => !allowed.has(e.account));
+  if (illegal.length > 0) {
+    return {
+      ok: false,
+      status: 'illegal_account',
+      message: `AI 使用了白名单外科目（${illegal.map((e) => e.account).join('、')}），已拒绝（回退本地规则生成）。`,
+    };
+  }
+
+  // 质量闸 3：金额必须来自票面字段（专票进项税=税额、普票借方=价税合计的容差校验）
+  const amount = Number(invoice?.amount) || 0;
+  const taxAmount = Number(invoice?.taxAmount) || 0;
+  const total = Number(invoice?.totalAmount) || amount + taxAmount;
+  const invoiceType = String(invoice?.invoiceType || '');
+  const isSpecialVat = invoiceType.includes('专');
+  const expectDebit = isSpecialVat ? amount + taxAmount : total;
+  if (expectDebit > 0 && Math.abs(debit - expectDebit) > 0.05) {
+    return {
+      ok: false,
+      status: 'amount_mismatch',
+      message: `AI 分录借方合计 ${debit} 与票面口径不符（应为 ${expectDebit}），已拒绝（回退本地规则生成）。`,
     };
   }
 

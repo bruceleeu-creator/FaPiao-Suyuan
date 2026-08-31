@@ -662,9 +662,9 @@ async function handleRequest(req, res) {
       provider: 'deepseek',
       service: 'invoice-verify',
       status: verifyResult.status,
-      ...(verifyResult.ok
-        ? { data: verifyResult.data }
-        : { message: verifyResult.message || 'AI 核验失败。' }),
+      // AI 不可用时 ok=false 但确定性预检发现（data.findings）仍然有效，一并带回
+      ...(verifyResult.data ? { data: verifyResult.data } : {}),
+      ...(verifyResult.ok || !verifyResult.data ? { message: verifyResult.message || 'AI 核验失败。' } : {}),
       traceId,
       timestamp: new Date().toISOString(),
     };

@@ -374,6 +374,32 @@ async function runSmokeTests() {
     assert('规则硬伤走确定性分支返回验真失败', verifyRule.json?.data?.mappedStatus === '验真失败', `实际: ${verifyRule.json?.data?.mappedStatus}`);
     assert('规则核验返回 findings', Array.isArray(verifyRule.json?.data?.findings) && verifyRule.json.data.findings.length > 0);
 
+    // 确定性规则回归（官方出处见 docs/验真与凭证规则设计.md）：
+    // 数电票号码年度位(23) ≠ 开票年份(26) → 硬伤
+    const verifyYear = await callEndpoint('POST', '/api/deepseek/verify', {
+      invoice: { invoiceNumber: '23310100000000000001', issueDate: '2026-08-01', amount: 100, taxAmount: 6, totalAmount: 106 },
+    });
+    assert('数电票年度位矛盾判验真失败', verifyYear.json?.data?.mappedStatus === '验真失败', `实际: ${verifyYear.json?.data?.mappedStatus}`);
+    assert('年度位矛盾 findings 引用具体值', JSON.stringify(verifyYear.json?.data?.findings).includes('23'));
+
+    // 数电票不应带发票代码 → 版式矛盾提示
+    const verifyDigitalCode = await callEndpoint('POST', '/api/deepseek/verify', {
+      invoice: { invoiceNumber: '26310100000000000001', invoiceCode: '044002600111', issueDate: '2026-08-01', amount: 100, taxAmount: 6, totalAmount: 106 },
+    });
+    assert('数电票带代码给出矛盾提示', JSON.stringify(verifyDigitalCode.json?.data?.findings).includes('发票代码'), `实际: ${JSON.stringify(verifyDigitalCode.json?.data?.findings).slice(0, 100)}`);
+
+    // 12 位代码年度位(19)与开票日期(26)矛盾 → 硬伤
+    const verifyCodeYear = await callEndpoint('POST', '/api/deepseek/verify', {
+      invoice: { invoiceNumber: '10012001', invoiceCode: '044019600111', issueDate: '2026-08-01', amount: 100, taxAmount: 6, totalAmount: 106 },
+    });
+    assert('12位代码年度位矛盾判验真失败', verifyCodeYear.json?.data?.mappedStatus === '验真失败', `实际: ${verifyCodeYear.json?.data?.mappedStatus}`);
+
+    // 税率区间外（17% 已废止）→ 提示但不硬失败（勾稽正常）
+    const verifyRate = await callEndpoint('POST', '/api/deepseek/verify', {
+      invoice: { invoiceNumber: '10012001', invoiceCode: '044026000111', issueDate: '2026-08-01', amount: 100, taxAmount: 6, totalAmount: 106, taxRate: '17%' },
+    });
+    assert('税率区间外给出提示', JSON.stringify(verifyRate.json?.data?.findings).includes('17%'), `实际: ${JSON.stringify(verifyRate.json?.data?.findings).slice(0, 120)}`);
+
     // AI 凭证：无会话密钥 → not_configured 或回退假密钥失败（前端回退本地规则）
     const voucher = await callEndpoint('POST', '/api/deepseek/voucher', {
       invoice: { invoiceNumber: '10012001', amount: 100, taxAmount: 6, totalAmount: 106, invoiceType: '增值税普通发票' },
