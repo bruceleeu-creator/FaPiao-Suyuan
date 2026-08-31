@@ -8,10 +8,11 @@
 
 ## 当前项目文件
 
-- 项目根目录：`/Users/yfk009/Documents/AI项目库/发票溯源证据链系统`
-- 核心来源文档：`发票入账系统产品架构方案.md`
-- 当前文档索引：`docs/CO_20260719_文档瘦身索引.md`
-- 历史过程文档：`docs/archive/202607-process/`
+- 项目根目录：`C:\Users\Administrator\Desktop\开发知识库\FaPiao-Suyuan`（Windows 开发机；生产服务器 49.232.160.7）
+- 核心来源文档：`docs/发票入账系统产品架构方案.md`
+- 当前文档索引：根目录 4 个活文档（README / AGENTS / agent / progress），详见 `agent.md` 第 7 节与 `README.md` 第 13 节
+- 规则文档：`docs/验真与凭证规则设计.md`（验真/凭证规则变更的权威来源）
+- 历史过程文档：`docs/archive/202607-process/`（47 篇）
 - 当前暂不与 Obsidian 同步，所有产出先放在本项目文件夹。
 
 ## 核心产品结构
