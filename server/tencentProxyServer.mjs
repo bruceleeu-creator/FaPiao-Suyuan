@@ -53,6 +53,13 @@ import {
   validateSecretId,
   validateSecretKey,
 } from './tencentCredentialStore.mjs';
+import {
+  saveUserCredential,
+  loadUserCredential,
+  clearUserCredential,
+  getStoredCredentialStatus,
+  isCredentialStoreAvailable,
+} from './credentialStore.mjs';
 
 // 安全日志：只输出非敏感信息
 // 不输出请求体原文（可能含敏感字段）、不输出密钥值、不输出完整 headers
@@ -100,6 +107,31 @@ function requireApiToken(req, res, corsOrigin, pathname) {
   logRequest(req.method, pathname, 401, traceId);
   sendJson(res, 401, payload, corsOrigin);
   return false;
+}
+
+// 从 Authorization 头解析当前登录用户（requireApiToken 通过后使用）
+function getUserFromAuthHeader(req) {
+  const header = req.headers.authorization || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
+  const result = verifyToken(token);
+  return result.ok ? result.user : null;
+}
+
+// 凭据解析链中间层：请求未携带会话密钥时，回退该登录账户在服务器密钥库
+// （node:sqlite + AES-256-GCM，按账户隔离）中保存的密钥；再往下才轮到服务器全局配置
+// 返回 undefined 表示继续走既有兜底（.env / 全局加密存储）
+function resolveStoredFallback(req, provider) {
+  const user = getUserFromAuthHeader(req);
+  if (!user?.id) return undefined;
+  const stored = loadUserCredential(String(user.id), provider);
+  if (!stored) return undefined;
+  if (provider === 'tencent' && stored.secretId && stored.secretKey) {
+    return { secretId: stored.secretId, secretKey: stored.secretKey };
+  }
+  if (provider === 'deepseek' && stored.apiKey) {
+    return { apiKey: stored.apiKey, ...(stored.model ? { model: stored.model } : {}) };
+  }
+  return undefined;
 }
 
 // 管理员接口鉴权：需登录且角色为 admin（第一个注册的账户）
@@ -486,13 +518,13 @@ async function handleRequest(req, res) {
     }
 
     // 有图片/PDF 数据时，尝试调用真实腾讯云 OCR
-    // secretId/secretKey 为请求级凭据（用户会话密钥，仅本次调用使用，不落盘、不打印）
+    // 凭据解析链：请求级（会话密钥兼容）> 该账户的服务器密钥库 > 服务器全局配置
     const ocrResult = await recognizeVatInvoice({
       imageBase64,
       imageUrl,
       isPdf,
       pdfPageNumber,
-      credentials: secretId || secretKey ? { secretId, secretKey } : undefined,
+      credentials: secretId || secretKey ? { secretId, secretKey } : resolveStoredFallback(req, 'tencent'),
     });
     const traceId = generateTraceId();
     if (ocrResult.ok) {
@@ -555,8 +587,8 @@ async function handleRequest(req, res) {
     if (!requireApiToken(req, res, corsOrigin, pathname)) return;
 
     const { ocrFields, currentForm, apiKey, model } = bodyResult.data || {};
-    // apiKey/model 为请求级凭据（用户会话密钥，仅本次调用使用，不落盘、不打印）
-    const credentials = apiKey || model ? { apiKey, model } : undefined;
+    // 凭据解析链：请求级（会话密钥兼容）> 该账户的服务器密钥库 > 服务器全局配置
+    const credentials = apiKey || model ? { apiKey, model } : resolveStoredFallback(req, 'deepseek');
     const deepseekResult = await interpretInvoiceFields({ ocrFields, currentForm, credentials });
     const traceId = generateTraceId();
     const payload = {
@@ -589,7 +621,7 @@ async function handleRequest(req, res) {
     const { invoice, apiKey, model } = bodyResult.data || {};
     const questionsResult = await generateInvoiceQuestions({
       invoice,
-      credentials: apiKey || model ? { apiKey, model } : undefined,
+      credentials: apiKey || model ? { apiKey, model } : resolveStoredFallback(req, 'deepseek'),
     });
     const traceId = generateTraceId();
     const payload = {
@@ -620,7 +652,7 @@ async function handleRequest(req, res) {
     }
     if (!requireApiToken(req, res, corsOrigin, pathname)) return;
     const { invoice, businessEvent, evidenceChain, answers, apiKey, model } = bodyResult.data || {};
-    const credentials = apiKey || model ? { apiKey, model } : undefined;
+    const credentials = apiKey || model ? { apiKey, model } : resolveStoredFallback(req, 'deepseek');
     const riskResult = await assessInvoiceRisk({ invoice, businessEvent, evidenceChain, answers, credentials });
     const traceId = generateTraceId();
     const payload = {
@@ -654,7 +686,7 @@ async function handleRequest(req, res) {
     const { invoice, apiKey, model } = bodyResult.data || {};
     const verifyResult = await verifyInvoiceByAi({
       invoice,
-      credentials: apiKey || model ? { apiKey, model } : undefined,
+      credentials: apiKey || model ? { apiKey, model } : resolveStoredFallback(req, 'deepseek'),
     });
     const traceId = generateTraceId();
     const payload = {
@@ -688,7 +720,7 @@ async function handleRequest(req, res) {
     const voucherResult = await buildVoucherDraftByAi({
       invoice,
       decision,
-      credentials: apiKey || model ? { apiKey, model } : undefined,
+      credentials: apiKey || model ? { apiKey, model } : resolveStoredFallback(req, 'deepseek'),
     });
     const traceId = generateTraceId();
     const payload = {
@@ -720,9 +752,17 @@ async function handleRequest(req, res) {
     }
     if (!requireApiToken(req, res, corsOrigin, pathname)) return;
     const body = bodyResult.data || {};
+    // 空 body = 测当前实际生效的密钥（账户密钥库 > 服务器全局兜底）；
+    // 带凭据 = 只测请求传入的这组（保存前预检/旧会话密钥兼容）
+    const tencentCreds = body.secretId
+      ? { secretId: body.secretId, secretKey: body.secretKey }
+      : resolveStoredFallback(req, 'tencent');
+    const deepseekCreds = body.apiKey
+      ? { apiKey: body.apiKey, ...(body.model ? { model: body.model } : {}) }
+      : resolveStoredFallback(req, 'deepseek');
     const testResult = pathname === '/api/keys/test/tencent'
-      ? await testTencentOcrCredentials(body.secretId ? { secretId: body.secretId, secretKey: body.secretKey } : undefined)
-      : await testDeepSeekCredential(body.apiKey ? { apiKey: body.apiKey, model: body.model } : undefined);
+      ? await testTencentOcrCredentials(tencentCreds)
+      : await testDeepSeekCredential(deepseekCreds);
     const traceId = generateTraceId();
     const payload = {
       ok: testResult.ok,
@@ -735,6 +775,100 @@ async function handleRequest(req, res) {
     };
     logRequest(method, pathname, 200, traceId);
     sendJson(res, 200, payload, corsOrigin);
+    return;
+  }
+
+  // 6.8 账户密钥库（2026-09-15 新增）：密钥按账户加密存服务器数据库，浏览器不持久化
+  // GET /api/keys/stored                    → 当前账户已存密钥状态（布尔 + 掩码，永不回显明文）
+  // POST /api/keys/stored/deepseek          → 保存 {apiKey, model?}
+  // POST /api/keys/stored/tencent           → 保存 {secretId, secretKey}
+  // POST /api/keys/stored/clear             → 清除 {provider: 'deepseek'|'tencent'|'all'}
+  if (method === 'GET' && pathname === '/api/keys/stored') {
+    if (!requireApiToken(req, res, corsOrigin, pathname)) return;
+    const user = getUserFromAuthHeader(req);
+    const traceId = generateTraceId();
+    const payload = {
+      ok: true,
+      service: 'stored-keys',
+      status: 'success',
+      data: getStoredCredentialStatus(user?.id ? String(user.id) : ''),
+      traceId,
+      timestamp: new Date().toISOString(),
+    };
+    logRequest(method, pathname, 200, traceId);
+    sendJson(res, 200, payload, corsOrigin);
+    return;
+  }
+
+  if (
+    method === 'POST' &&
+    (pathname === '/api/keys/stored/deepseek' || pathname === '/api/keys/stored/tencent' || pathname === '/api/keys/stored/clear')
+  ) {
+    const bodyResult = await parseJsonBody(req);
+    if (!bodyResult.ok) {
+      const payload = buildErrorResponse(ERROR_CODES.INVALID_JSON, bodyResult.error);
+      logRequest(method, pathname, 400, payload.traceId);
+      sendJson(res, 400, payload, corsOrigin);
+      return;
+    }
+    if (!requireApiToken(req, res, corsOrigin, pathname)) return;
+    const user = getUserFromAuthHeader(req);
+    const userId = user?.id ? String(user.id) : '';
+    const traceId = generateTraceId();
+    if (!isCredentialStoreAvailable()) {
+      const payload = {
+        ok: false, service: 'stored-keys', status: 'error',
+        message: '服务器密钥库不可用（数据库未启用），请联系管理员检查 node:sqlite 配置。',
+        traceId, timestamp: new Date().toISOString(),
+      };
+      logRequest(method, pathname, 503, traceId);
+      sendJson(res, 503, payload, corsOrigin);
+      return;
+    }
+
+    let result;
+    try {
+      if (pathname === '/api/keys/stored/deepseek') {
+        const { apiKey, model } = bodyResult.data || {};
+        if (!validateDeepSeekKey(apiKey)) {
+          result = { ok: false, message: 'DeepSeek API Key 格式不正确：应以 sk- 开头（在 DeepSeek 开放平台「API Keys」页获取）。' };
+        } else if (model !== undefined && model !== '' && !validateDeepSeekModel(model)) {
+          result = { ok: false, message: '模型名格式不正确（3-64 位、不含空格）。' };
+        } else {
+          result = saveUserCredential(userId, 'deepseek', model ? { apiKey, model } : { apiKey });
+        }
+      } else if (pathname === '/api/keys/stored/tencent') {
+        const { secretId, secretKey } = bodyResult.data || {};
+        if (!validateSecretId(secretId) || !validateSecretKey(secretKey)) {
+          result = { ok: false, message: 'SecretId/SecretKey 格式不正确：SecretId 应以 AKID 开头共 36 位，SecretKey 为 32 位字母数字。' };
+        } else {
+          result = saveUserCredential(userId, 'tencent', { secretId, secretKey });
+        }
+      } else {
+        const { provider } = bodyResult.data || {};
+        if (provider !== 'deepseek' && provider !== 'tencent' && provider !== 'all') {
+          result = { ok: false, message: 'provider 必须是 deepseek / tencent / all。' };
+        } else {
+          result = clearUserCredential(userId, provider);
+        }
+      }
+    } catch (err) {
+      console.error(`[STORED_KEYS] 操作失败: ${err.name}`);
+      result = { ok: false, message: '密钥库操作失败，请稍后重试。' };
+    }
+
+    const statusCode = result.ok ? 200 : 400;
+    const payload = {
+      ok: result.ok,
+      service: 'stored-keys',
+      status: result.ok ? 'success' : 'error',
+      message: result.message,
+      ...(result.ok ? { data: getStoredCredentialStatus(userId) } : {}),
+      traceId,
+      timestamp: new Date().toISOString(),
+    };
+    logRequest(method, pathname, statusCode, traceId);
+    sendJson(res, statusCode, payload, corsOrigin);
     return;
   }
 
@@ -759,6 +893,10 @@ async function handleRequest(req, res) {
     '/api/deepseek/voucher',
     '/api/keys/test/tencent',
     '/api/keys/test/deepseek',
+    '/api/keys/stored',
+    '/api/keys/stored/deepseek',
+    '/api/keys/stored/tencent',
+    '/api/keys/stored/clear',
   ];
   if (knownPaths.includes(pathname)) {
     // 路径存在但方法不对

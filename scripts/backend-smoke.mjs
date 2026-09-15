@@ -409,6 +409,72 @@ async function runSmokeTests() {
   }
   console.log('');
 
+  // [9/9] 账户密钥库 /api/keys/stored/*（node:sqlite + AES-256-GCM，按账户隔离）
+  console.log('[9/9] 账户密钥库 /api/keys/stored/*');
+  {
+    const port = resolveBackendPort();
+    const base = `http://${DEFAULT_HOST}:${port}`;
+
+    // 无令牌 → 401
+    const noAuth = await fetch(`${base}/api/keys/stored`);
+    assert('密钥库状态无令牌返回 401', noAuth.status === 401, `实际: ${noAuth.status}`);
+
+    // 初始状态：两类均未配置
+    const status0 = await callEndpoint('GET', '/api/keys/stored');
+    assert('密钥库状态返回 200', status0.status === 200, `实际: ${status0.status}`);
+    assert('初始 DeepSeek 未配置', status0.json?.data?.deepseek?.configured === false);
+    assert('初始腾讯云未配置', status0.json?.data?.tencent?.configured === false);
+
+    // 非法格式 → 400
+    const badDs = await callEndpoint('POST', '/api/keys/stored/deepseek', { apiKey: 'not-valid' });
+    assert('非法 DeepSeek Key 返回 400', badDs.status === 400, `实际: ${badDs.status}`);
+    const badTc = await callEndpoint('POST', '/api/keys/stored/tencent', { secretId: 'BAD', secretKey: 'BAD' });
+    assert('非法腾讯云密钥返回 400', badTc.status === 400, `实际: ${badTc.status}`);
+
+    // 保存合法形态假密钥 → 200、状态翻转、只返回掩码、永不回显明文
+    const fakeDs = `sk-${'c'.repeat(24)}`;
+    const saveDs = await callEndpoint('POST', '/api/keys/stored/deepseek', { apiKey: fakeDs, model: 'deepseek-v4-flash' });
+    assert('保存 DeepSeek 账户密钥返回 200', saveDs.status === 200, `实际: ${saveDs.status}`);
+    assert('保存后 DeepSeek 显示已配置', saveDs.json?.data?.deepseek?.configured === true);
+    const dsMasked = saveDs.json?.data?.deepseek?.masked || '';
+    assert('掩码只保留末 4 位（****xxxx）', dsMasked.startsWith('****') && dsMasked.length === 8, `实际: ${dsMasked}`);
+    assert('响应不含明文 API Key', !JSON.stringify(saveDs.json).includes(fakeDs));
+
+    const fakeTcId = `AKID${'d'.repeat(32)}`;
+    const saveTc = await callEndpoint('POST', '/api/keys/stored/tencent', {
+      secretId: fakeTcId,
+      secretKey: 'e'.repeat(32),
+    });
+    assert('保存腾讯云账户密钥返回 200', saveTc.status === 200, `实际: ${saveTc.status}`);
+    assert('保存后腾讯云显示已配置', saveTc.json?.data?.tencent?.configured === true);
+    assert('响应不含明文 SecretId', !JSON.stringify(saveTc.json).includes(fakeTcId));
+
+    // 非法 provider 清除 → 400
+    const badClear = await callEndpoint('POST', '/api/keys/stored/clear', { provider: 'xxx' });
+    assert('非法 provider 清除返回 400', badClear.status === 400, `实际: ${badClear.status}`);
+
+    // 清除单个 → 该类翻回未配置，另一类不受影响
+    const clearDs = await callEndpoint('POST', '/api/keys/stored/clear', { provider: 'deepseek' });
+    assert('清除单个 provider 返回 200', clearDs.status === 200);
+    assert('清除后 DeepSeek 未配置', clearDs.json?.data?.deepseek?.configured === false);
+    assert('腾讯云不受单类清除影响', clearDs.json?.data?.tencent?.configured === true);
+
+    // 账户隔离：另一账户读不到第一账户的密钥
+    const other = registerUser({ username: `smoke_stored_${Date.now().toString(36)}`, password: 'smoke-pass-123' });
+    assert('隔离验证账户注册成功', other.ok === true);
+    const otherToken = other.ok ? issueToken(other.user).token : '';
+    const otherRes = await fetch(`${base}/api/keys/stored`, { headers: { Authorization: `Bearer ${otherToken}` } });
+    const otherJson = await otherRes.json();
+    assert('另一账户状态为未配置', otherJson?.data?.tencent?.configured === false);
+    assert('另一账户看不到他人密钥掩码', !JSON.stringify(otherJson).includes(saveTc.json?.data?.tencent?.masked || '____never____'));
+
+    // 清除全部（收尾）
+    const clearAll = await callEndpoint('POST', '/api/keys/stored/clear', { provider: 'all' });
+    assert('清除全部返回 200', clearAll.status === 200);
+    assert('清除后腾讯云未配置', clearAll.json?.data?.tencent?.configured === false);
+  }
+  console.log('');
+
   // 汇总
   const passed = results.filter((r) => r.ok).length;
   const failed = results.filter((r) => !r.ok).length;
@@ -433,6 +499,8 @@ async function main() {
   // 密钥加密存储同样指向临时目录：管理员密钥接口测试不污染 server/ 下的真实凭据文件
   const credDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'invoice-cred-smoke-'));
   process.env.CREDENTIAL_DATA_DIR = credDataDir;
+  // 账户密钥库数据库同样指向临时目录：/api/keys/stored 测试不污染真实 server/data/credentials.db
+  process.env.CREDENTIAL_DB_PATH = path.join(credDataDir, 'credentials.db');
 
   const port = resolveBackendPort();
   const server = createServer();

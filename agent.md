@@ -1,6 +1,6 @@
 # Agent 当前任务记忆（开发完成态）
 
-> 更新日期：2026-09-15 —— Gitea 备份仓库域名 HTTPS 化（3cc7xt.site:8443）、服务器配置 OCR 常驻兜底密钥（实测鉴权通过）、手机端入口页内容更新。此前：账户系统上线 + 公网部署完成（腾讯云 49.232.160.7:8083）。
+> 更新日期：2026-09-15 —— 账户密钥库上线（密钥存服务器数据库，浏览器零持久化，见 §4.10）；Gitea 备份仓库域名 HTTPS 化（3cc7xt.site:8443）、服务器配置 OCR 常驻兜底密钥（实测鉴权通过）、手机端入口页内容更新。此前：账户系统上线 + 公网部署完成（腾讯云 49.232.160.7:8083）。
 
 ## 0. 项目总览
 
@@ -148,6 +148,8 @@ npm run validate      # 一键全验证
 
 ### 4.9 Gitea 域名化 + OCR 常驻兜底密钥（2026-09-15）
 
+> §4.8 的「会话密钥制」已于同日升级为账户密钥库（§4.10）：sessionStorage 模型保留为兼容读取层。
+
 - **Gitea 域名 + HTTPS**：`https://3cc7xt.site:8443/BruceLEEU/Fapiao-Suyuan.git`。nginx vhost `/www/server/panel/vhost/nginx/gitea.conf`（listen 443+8443 ssl，证书 `/etc/nginx/ssl/3cc7xt.site/`）反代 127.0.0.1:3000；`/etc/gitea/app.ini` 的 `ROOT_URL = https://3cc7xt.site:8443/`。外网只有 8443 可达（443 防火墙未放行），Gitea 原生进程只绑回环。本地 `git remote set-url gitea https://3cc7xt.site:8443/BruceLEEU/Fapiao-Suyuan.git`；凭据沿用旧 host 的 GCM 存储（host 变更需 `git credential approve` 迁移或推送时用带凭据 URL 一次）。
 - **OCR 常驻兜底密钥（用户 2026-09-15 提供，实测第一组可用密钥）**：
   - 位置：`/www/wwwroot/invoice-evidence/.env`（`server/` 上一级；`TENCENT_CLOUD_SECRET_ID/KEY` + `TENCENT_CLOUD_REGION`），权限 600、root 属主、不在 Web 根目录（Web 根是独立的 `/www/wwwroot/invoice-evidence-web`）、不入任何仓库。
@@ -158,6 +160,16 @@ npm run validate      # 一键全验证
 - **users.json 事故与恢复（教训，勿重犯）**：清理诊断账号时用 `JSON.stringify(obj, Object.keys(db))` 当"格式化"——replacer 数组是**每层白名单**，把 users 数组内每个用户对象的字段全部过滤成 `{}`（username/salt/hash 全丢）。幸有每日 3 点 crontab 备份（`/www/backup/invoice-evidence-data-YYYY-MM-DD.tar.gz` 留 7 份），从当日备份恢复后用正确方式（parse → filter → `JSON.stringify(db)` 无 replacer → 临时文件 + rename 原子替换）重做清理。**规则：改 JSON 存储一律 parse/filter/stringify(无 replacer)，写前断言关键字段非空，否则中止。**
 - 账户清理结果：`diag_test_0830`（2026-08-30 诊断遗留）与 `deploy_check_0915`（本次验证临时号）均已删除；现存 3 户：1234(admin)、bruce、rule_check_0831。
 
+### 4.10 账户密钥库：密钥存服务器数据库（2026-09-15）
+
+- **模型变更（用户当日决策："不要直接保存在浏览器缓存，写一个数据库存储，再后端补一个存储模块"）**：密钥从「浏览器 sessionStorage、关站自清」升级为「服务器账户密钥库」——用户在「接口配置」页保存的腾讯云/DeepSeek 密钥按账户加密落库，跨会话可用；浏览器不再持久化任何密钥。旧 sessionStorage 密钥保留为请求级兼容读取（优先级最高），面板检测到时预填表单、保存成功后自动清除。
+- **后端存储模块 `server/credentialStore.mjs`**：node:sqlite（零第三方依赖）数据库 `server/data/credentials.db`（每日 3 点 crontab 备份范围，`CREDENTIAL_DB_PATH` 可覆盖）；表 `user_credentials(user_id, provider, secret_enc, updated_at)`，主键 (user_id, provider)，**SQL 全参数绑定**；值级 AES-256-GCM 加密，vault 密钥来自 `CREDENTIAL_VAULT_KEY` 环境变量或自动生成的 `server/data/credential-vault.key`（0600，与库同目录→备份自洽）；库文件 0600；node:sqlite 不可用时降级（服务器照常启动，密钥库接口 503，不影响登录/健康检查/.env 兜底）。
+- **新路由**：`GET /api/keys/stored`（状态：布尔+末 4 位掩码）、`POST /api/keys/stored/{deepseek,tencent}`（格式校验后保存）、`POST /api/keys/stored/clear`（provider: deepseek|tencent|all）。全部 Bearer 登录、按 user_id 隔离，永不回显明文。
+- **凭据解析链（六处调用点 + 测试接口）**：请求级（兼容）> 账户密钥库 > 服务器全局（加密存储 > .env）。`resolveStoredFallback(req, provider)` 在 OCR + 五个 DeepSeek 路由接入；`/api/keys/test/{tencent,deepseek}` 空 body 时测「当前实际生效链」（账户库 > .env 兜底）。
+- **前端**：`src/integrations/storedKeysApi.ts`（typed 客户端，8 项测试）；`SessionKeysPanel.tsx` v4——「保存并验证」= POST 存储 → 立即空 body 真实验证；旧会话密钥预填迁移；「立即清除本账户全部已存密钥」= clear all + 清 sessionStorage 遗留；`sessionKeyStore.ts` 降级为兼容层（注释已更新，6 项测试不变）。
+- **Node 版本坑**：node:sqlite 需 Node ≥22.13 免标志；生产 v22.11.0 必须 `--experimental-sqlite`（CI 装 Node 22 最新、本机 v24 均免标志）。**生产 pm2 已用 `--interpreter-args="--experimental-sqlite"` 重新注册**（`pm2 delete` + `pm2 start start.mjs --name invoice-evidence-server --interpreter-args=...` + `pm2 save`，CI 的 `pm2 restart` 沿用该配置）。
+- 验证口径：384 前端用例 + 122 项后端冒烟（新增第 9 段：401/初始状态/400 格式/掩码末 4 位/响应不含明文/单类清除互不影响/跨账户隔离/全部清除）+ 构建，全部通过。
+
 ## 5. 涉及文件索引
 
 - **流程页**：`src/ui/pages/InvoiceWorkflowPage.tsx`（证据补充任务卡片 + 详情弹层 + 风险报告）、`src/ui/pages/InvoiceIntakePage.tsx`（OCR 状态条 + 模拟降级）、`src/ui/pages/DecisionResultPage.tsx`
@@ -166,7 +178,8 @@ npm run validate      # 一键全验证
 - **状态机**：`src/workflow/workflowReducer.ts`、`statusMachine.ts`、`WorkflowContext.tsx`
 - **账户**：`server/authStore.mjs`、`server/start.mjs`（pm2 入口）、`src/auth/authStorage.ts`、`src/auth/AuthContext.tsx`、`src/ui/pages/LoginPage.tsx`
 - **AI 层**：`src/ai/deepSeekQuestionService.ts`、`deepSeekInterpreter.ts`、`mockQuestionService.ts`、`mockEvidenceMatcher.ts`、`mockRiskAdvisor.ts`、`evidenceTemplateDocx.ts`、`categoryRules.ts`
-- **规则/集成**：`src/rules/thresholdStore.ts`、`src/integrations/*`
+- **规则/集成**：`src/rules/thresholdStore.ts`、`src/integrations/*`（含 `storedKeysApi.ts` 账户密钥库客户端、`sessionKeyStore.ts` 旧会话密钥兼容层）
+- **密钥面板**：`src/ui/components/SessionKeysPanel.tsx`（v4 账户密钥库）
 - **样式**：`src/styles.css`（视觉系统 v2，含证据任务卡片、驾驶舱宽扁卡片、登录页 auth-* 区块）
 - **后端**：`server/tencentProxyServer.mjs`（含 /api/auth/* 路由与 requireApiToken 鉴权）、`authStore.mjs`、`deepseekClient.mjs`、`deepseekConfig.mjs`、`tencentOcrClient.mjs`、`tencentCredentialStore.mjs`、`tencentProxyResponses.mjs`、`tencentProxyConfig.mjs`
 - **启动**：`scripts/dev.mjs`、`scripts/backend-smoke.mjs`（含账户段）、`package.json`、`vite.config.ts`（含 /api/auth 代理）、`.env.example`
@@ -176,7 +189,7 @@ npm run validate      # 一键全验证
 - **8083 防火墙**：需用户在腾讯云控制台放行（TCP/8083/0.0.0.0/0），放行前外网不可达（服务器本机已验证全通）。
 - **HTTP 明文**：IP 直连无 HTTPS（无域名办不了证书）；上域名需改 nginx 三处 + 证书，架构已预留。
 - **服务器 SSH 加固待确认**：ssh 开密码登录 + root 直登，auth 日志已有 14.8 万次爆破尝试；已向用户提议禁用密码登录（保留密钥登录），等用户确认后执行。docker 端口（8478/4440/5000/13306/5212 等）对外监听，需用户到腾讯云防火墙核对放行范围。
-- **生产密钥模型已改会话制（2026-08-31）**：用户密钥仅存浏览器 sessionStorage（关站自清），服务器零持久化（旧加密存储文件已删）。**2026-09-15 起增加服务器 OCR 常驻兜底密钥（.env，600 权限，仅无会话密钥时生效，实测鉴权通过）**，用户无密钥时 OCR 也可真实识别；曾提供的旧 3 组 SecretId/SecretKey 均签名不匹配作废，现行兜底密钥为 2026-09-15 新配组（值不入库，见 §4.9）。
+- **生产密钥模型：账户密钥库（2026-09-15，取代 08-31 会话制）**：用户密钥加密存服务器 `server/data/credentials.db`（AES-256-GCM，按账户隔离，掩码显示，浏览器零持久化，见 §4.10）；服务器另有 OCR 常驻兜底密钥（.env，600 权限，实测鉴权通过，见 §4.9）。曾提供的旧 3 组 SecretId/SecretKey 均签名不匹配作废。**生产 Node v22.11.0 需 pm2 `--experimental-sqlite` 标志（已配置），升级 Node 前不可移除。**
 - **验真/凭证已 AI 化（2026-08-31）**：不再是模拟/预留——验真 = 确定性规则 + DeepSeek 一致性核验（见 4.8 与 docs/验真与凭证规则设计.md），凭证 = AI 分录草稿 + 本地规则回退。查重仍为本地逻辑（产品边界内）。
 - **诊断账户已清理（2026-09-15）**：diag_test_0830 与验证临时号 deploy_check_0915 均已从 users.json 删除（含一次误写坏的恢复事故，见 §4.9 教训）；现存 3 户：1234(admin)、bruce、rule_check_0831。
 - 验真、查重、凭证接口状态见上方 2026-08-31 两条；验真/凭证为 AI + 规则实现，查重为本地逻辑。

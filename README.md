@@ -69,7 +69,7 @@ npm run dev           # 终端 2：前端 Vite
 - 未登录访问任何页面都会被重定向到 `/login`；侧边栏底部显示当前账户并提供「退出登录」。
 - **数据按账户隔离**：每个账户的发票案例、规则阈值、接口配置存放在独立的 localStorage 命名空间（`invoice_evidence_u{用户ID}__*`），不同账户在同一浏览器中互不可见；演示样例仍为全局只读。
 - 密码使用 scrypt + 随机盐加密存储于 `server/data/users.json`（不存明文）；登录令牌为 HMAC-SHA256 无状态签名，有效期 7 天，后端重启不掉线。
-- **管理员**：第一个注册的账户自动成为管理员（侧边栏有「管理员」徽标）——只有管理员能在「接口配置」页配置 DeepSeek / 腾讯云密钥（AES-256-GCM 加密存储在服务器，保存即生效、全局可用、页面永不回显密钥值）。
+- **管理员**：第一个注册的账户自动成为管理员（侧边栏有「管理员」徽标）。**密钥配置（2026-09-15 起）对所有登录用户开放**：每人可把自己的腾讯云 / DeepSeek 密钥保存到「接口配置」页的服务器账户密钥库（AES-256-GCM 加密存储、按账户隔离、只显示末 4 位掩码，浏览器不保存密钥）。
 - 账户接口：`POST /api/auth/register`（注册即登录）、`POST /api/auth/login`、`POST /api/auth/me`（刷新页面后校验令牌恢复会话）。账户数据存放位置可用环境变量 `AUTH_DATA_DIR` 覆盖。
 
 ## 3. 功能模块（页面导航）
@@ -156,6 +156,7 @@ server/
 ├── deepseekConfig.mjs          # .env 加载（KEY=VALUE 简易解析，缺失才注入）
 ├── tencentOcrClient.mjs        # 腾讯云真实 OCR（TC3 签名 + VatInvoiceOCR）
 ├── tencentCredentialStore.mjs  # 腾讯云密钥 AES-256-GCM 本地加密存储
+├── credentialStore.mjs         # 账户密钥库：node:sqlite + 值级 AES-256-GCM（按 user_id+provider 隔离）
 ├── tencentProxyConfig.mjs      # 配置 / CORS 白名单 / 密钥存在性检查
 └── tencentProxyResponses.mjs   # 预留响应构造与 traceId
 ```
@@ -241,7 +242,7 @@ git remote add gitea https://3cc7xt.site:8443/BruceLEEU/Fapiao-Suyuan.git
 - 服务器路径：后端 `/www/wwwroot/invoice-evidence/server`（入口 `start.mjs`），前端 `/www/wwwroot/invoice-evidence-web`，nginx vhost `/www/server/panel/vhost/nginx/invoice-evidence-web.conf`
 - 账户数据：`server/data/users.json`，每日 3 点自动备份至 `/www/backup`（保留 7 份）；业务数据在各用户浏览器 localStorage（按账户命名空间隔离，不上传服务器）
 - 更新发布：见第 9 节「代码仓库与发布方式」——推 GitHub main 自动 CI/CD 部署，推自建 Gitea 仅备份
-- 上线密钥（**会话密钥制，2026-08-31 起**）：每个用户登录后在「接口配置」页填入自己的密钥——仅存于浏览器 sessionStorage（关闭网站自动清除，可随时手动清除），**服务器不保存任何用户密钥**；「启用并验证」自动发起一次最小真实调用确认密钥可用（区分 401 无效 / 402 欠费 / AuthFailure 被拒 / 超时）。接口地址由后端代理固定（ocr.tencentcloudapi.com / api.deepseek.com），无需填写。验真与凭证草稿由 DeepSeek 实现（AI 辅助核验 + AI 分录生成，均标注非官方结果并有本地规则回退），无需任何额外配置。**OCR 常驻兜底密钥（2026-09-15 起）**：服务器 `/www/wwwroot/invoice-evidence/.env`（`server/` 上一级，代码按此路径读取）配置了腾讯云 SecretId/SecretKey 兜底——仅在请求未携带会话密钥时生效；文件权限 600、root 属主、不在 Web 根目录下、不入仓库，任何接口只返回「已配置」布尔值，永不回显密钥。
+- 上线密钥（**账户密钥库，2026-09-15 起**）：每个用户登录后在「接口配置」页填入自己的腾讯云 / DeepSeek 密钥——**加密保存到服务器账户密钥库**（`server/data/credentials.db`，node:sqlite 数据库 + 值级 AES-256-GCM 加密、按账户隔离、每日随 server/data 自动备份），跨会话可用、可随时一键清除，浏览器不再持久化任何密钥，页面只显示末 4 位掩码、永不回显明文；「保存并验证」保存后自动发起一次最小真实调用确认密钥可用（区分 401 无效 / 402 欠费 / AuthFailure 被拒 / 超时），旧版浏览器会话密钥会被自动预填引导迁移。接口地址由后端代理固定（ocr.tencentcloudapi.com / api.deepseek.com），无需填写。验真与凭证草稿由 DeepSeek 实现（AI 辅助核验 + AI 分录生成，均标注非官方结果并有本地规则回退），无需任何额外配置。凭据解析优先级：请求级（兼容旧会话密钥透传）> 账户密钥库 > **服务器全局兜底（.env）**——OCR 常驻兜底密钥已配置（2026-09-15，`/www/wwwroot/invoice-evidence/.env`，600 权限 root 属主、不入仓库不在 Web 根、接口只回布尔值），未存个人密钥的用户也能真实识别发票。
 - 故障排查：上传发票"没反应/卡住"时优先到「接口配置」页看服务总览——任一服务"未配置/验证失败"，识别与 AI 能力就不会真实生效；填入密钥并验证通过即可恢复。
 
 ## 11. 产品边界与一期范围
@@ -287,3 +288,4 @@ git remote add gitea https://3cc7xt.site:8443/BruceLEEU/Fapiao-Suyuan.git
 | 2026-08-30 | 修复发票导入"无反应/卡住"（OCR 密钥错误被误判为成功的核心 Bug + 20s 超时保护）；管理页新增密钥「测试连接」；双远程仓库（GitHub 主 + 自建 Gitea 备份，见第 9 节） |
 | 2026-08-31 | 密钥改会话制（仅存浏览器、关站自清、服务器零持久化）；验真/凭证改 DeepSeek 实现（AI 辅助核验 + AI 分录草稿，均带本地回退）；规则加固：官方出处的确定性规则 + JSON mode 提示词 + 三道质量闸（见 `docs/验真与凭证规则设计.md`）；设置页重构（四档真实可用性状态）；文档规整（根目录只留 4 个活文档） |
 | 2026-09-15 | Gitea 备份仓库配域名 + HTTPS（`https://3cc7xt.site:8443`，旧 IP:3000 仅留本机回环），remote 与文档同步更新；手机端入口页内容更新（响应式可看范围 + 规划三件事 + 密钥说明）；服务器配置 OCR 常驻兜底密钥（`.env` 600 权限，仅无会话密钥时生效，已实测可用） |
+| 2026-09-15 | **账户密钥库**：密钥存储从浏览器 sessionStorage 升级为服务器数据库（`server/credentialStore.mjs`：node:sqlite + AES-256-GCM + 按账户隔离 + 掩码显示）；新增 `/api/keys/stored` 系列接口；OCR 与五个 DeepSeek 接口凭据链插入账户库；设置页面板 v4（保存即验证、旧会话密钥自动迁移、一键清除）；384 前端用例 + 122 项后端冒烟全过 |

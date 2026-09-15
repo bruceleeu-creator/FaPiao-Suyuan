@@ -1,16 +1,15 @@
-// 会话密钥面板（v3 · 2026-08-31 会话制重构）
+// 密钥配置面板（v4 · 2026-09-15 账户密钥库重构）
 //
-// 隐私模型（用户明确要求）：
-//   - SecretId/SecretKey/API Key 由用户自己填入，仅存于浏览器 sessionStorage
-//   - 关闭网站（标签页）即自动清除；也可随时「立即清除」
-//   - 服务器不落盘：密钥随请求透传给后端代理，用完即弃
-//   - 接口地址（Base URL）由后端代理固定，自动配置，无需填写
+// 密钥模型（用户 2026-09-15 决策：不再存浏览器缓存）：
+//   - SecretId/SecretKey/API Key 由用户自己填入，加密存入服务器账户密钥库
+//     （node:sqlite + AES-256-GCM，按账户隔离，跨会话可用）
+//   - 浏览器不再持久化任何密钥；页面永不回显完整值，只显示末 4 位掩码
+//   - 旧版 sessionStorage 会话密钥仅作兼容：检测到时预填表单，保存成功后自动迁移清除
 //
 // 状态语义（沿用四档）：未配置 / 已保存·未验证 / 验证通过 / 验证失败
-// 「已保存」= 已存入本会话；「验证」= 用该密钥发起一次最小真实调用
+// 「验证」= 以当前实际生效的密钥（账户密钥库 > 服务器全局兜底）发起一次最小真实调用
 //
-// 服务器全局密钥（管理员经 .env 或既有管理接口配置的加密存储）作为可选兜底：
-// 请求未携带会话密钥时后端自动回退；本面板只读展示其有无，不在此配置。
+// 服务器全局密钥（管理员 .env 配置）作为最后兜底；本面板只读展示其有无。
 
 import { useCallback, useEffect, useState } from 'react';
 import {
@@ -28,14 +27,19 @@ import {
 import { useAuth } from '../../auth/AuthContext';
 import { authHeaders } from '../../auth/authStorage';
 import {
-  clearSessionKeys,
   getTencentKeys,
   setTencentKeys,
   getDeepSeekKeys,
   setDeepSeekKeys,
-  type SessionTencentKeys,
-  type SessionDeepSeekKeys,
+  clearSessionKeys,
 } from '../../integrations/sessionKeyStore';
+import {
+  fetchStoredKeyStatus,
+  saveStoredDeepSeekKeys,
+  saveStoredTencentKeys,
+  clearStoredKeys,
+  type StoredKeysStatus,
+} from '../../integrations/storedKeysApi';
 
 // 控制台直达链接
 const LINKS = {
@@ -45,7 +49,7 @@ const LINKS = {
 } as const;
 
 interface ServiceState {
-  phase: 'idle' | 'enabling' | 'testing';
+  phase: 'idle' | 'saving' | 'testing';
   tested: null | boolean;
   message: string;
   testedAt: number | null;
@@ -55,16 +59,10 @@ const IDLE: ServiceState = { phase: 'idle', tested: null, message: '', testedAt:
 
 const PILL = {
   unconfigured: { label: '未配置', cls: 'aks-pill--unconfigured' },
-  unverified: { label: '已启用 · 未验证', cls: 'aks-pill--unverified' },
+  unverified: { label: '已保存 · 未验证', cls: 'aks-pill--unverified' },
   ok: { label: '验证通过', cls: 'aks-pill--ok' },
   fail: { label: '验证失败', cls: 'aks-pill--fail' },
 } as const;
-
-function maskKey(value: string, keep = 4): string {
-  if (!value) return '';
-  if (value.length <= keep * 2) return '****';
-  return `${value.slice(0, keep)}****${value.slice(-keep)}`;
-}
 
 const formatTime = (at: number | null) =>
   at ? new Date(at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : null;
@@ -73,8 +71,7 @@ export function SessionKeysPanel() {
   const { user } = useAuth();
   const uid = user?.userId;
 
-  const [tcEnabled, setTcEnabled] = useState(false);
-  const [dsEnabled, setDsEnabled] = useState(false);
+  const [storedStatus, setStoredStatus] = useState<StoredKeysStatus | null>(null);
   const [serverStatus, setServerStatus] = useState<{ tencent: boolean; deepseek: boolean } | null>(null);
 
   const [tencentId, setTencentId] = useState('');
@@ -85,12 +82,14 @@ export function SessionKeysPanel() {
   const [tcState, setTcState] = useState<ServiceState>(IDLE);
   const [dsState, setDsState] = useState<ServiceState>(IDLE);
 
-  const syncFromStore = useCallback(() => {
-    setTcEnabled(Boolean(getTencentKeys(uid)));
-    setDsEnabled(Boolean(getDeepSeekKeys(uid)));
-    const model = getDeepSeekKeys(uid)?.model;
-    if (model) setDeepseekModel((prev) => prev || model);
-  }, [uid]);
+  // 旧版 sessionStorage 会话密钥（2026-08-31 模型遗留）：仅用于一次性迁移预填
+  const legacyTencent = getTencentKeys(uid);
+  const legacyDeepSeek = getDeepSeekKeys(uid);
+
+  const refreshStored = useCallback(async () => {
+    const status = await fetchStoredKeyStatus();
+    setStoredStatus(status);
+  }, []);
 
   // 服务器全局兜底密钥状态（公开健康接口，只读展示）
   const fetchServerStatus = useCallback(async () => {
@@ -106,9 +105,20 @@ export function SessionKeysPanel() {
   }, []);
 
   useEffect(() => {
-    syncFromStore();
+    void refreshStored();
     void fetchServerStatus();
-  }, [syncFromStore, fetchServerStatus]);
+    // 旧版会话密钥迁移：检测到遗留密钥且服务器未存时预填表单，等待用户确认保存
+    if (legacyTencent && !tencentId) {
+      setTencentId(legacyTencent.secretId);
+      setTencentKey(legacyTencent.secretKey);
+    }
+    if (legacyDeepSeek && !deepseekKey) {
+      setDeepseekKey(legacyDeepSeek.apiKey);
+      const legacyModel = legacyDeepSeek.model;
+      if (legacyModel) setDeepseekModel((prev) => prev || legacyModel);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [uid]);
 
   useEffect(() => {
     if (!tcState.message && !dsState.message) return;
@@ -119,26 +129,15 @@ export function SessionKeysPanel() {
     return () => clearTimeout(t);
   }, [tcState.message, dsState.message]);
 
-  // 用指定凭据发起最小真实调用验证（会话密钥或服务器兜底）
-  const runTest = async (
-    kind: 'tencent' | 'deepseek',
-    creds?: SessionTencentKeys | SessionDeepSeekKeys,
-    setState: typeof setTcState = kind === 'tencent' ? setTcState : setDsState,
-  ) => {
+  // 以当前实际生效的密钥（账户密钥库 > 服务器兜底）发起最小真实调用
+  const runTest = async (kind: 'tencent' | 'deepseek') => {
+    const setState = kind === 'tencent' ? setTcState : setDsState;
     setState((s) => ({ ...s, phase: 'testing', message: '正在发起真实调用验证…' }));
-    const stored = kind === 'tencent' ? getTencentKeys(uid) : getDeepSeekKeys(uid);
-    const effective = creds ?? stored;
-    let body: Record<string, string> = {};
-    if (kind === 'tencent' && effective && 'secretId' in effective) {
-      body = { secretId: effective.secretId, secretKey: effective.secretKey };
-    } else if (kind === 'deepseek' && effective && 'apiKey' in effective) {
-      body = { apiKey: effective.apiKey, ...(effective.model ? { model: effective.model } : {}) };
-    }
     try {
       const r = await fetch(`/api/keys/test/${kind}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify(body),
+        body: JSON.stringify({}),
       });
       const payload = await r.json().catch(() => ({}));
       setState({
@@ -152,61 +151,79 @@ export function SessionKeysPanel() {
     }
   };
 
-  // 启用并验证：写入 sessionStorage → 立即真实测试（输入框随即清空，页面永不回显完整值）
+  // 保存到服务器账户密钥库 → 立即真实验证（输入框随即清空，页面永不回显完整值）
   const enableAndVerify = async (kind: 'tencent' | 'deepseek') => {
     if (kind === 'tencent') {
-      const keys = { secretId: tencentId.trim(), secretKey: tencentKey.trim() };
-      if (!setTencentKeys(uid, keys)) {
-        setTcState({ ...IDLE, tested: false, message: '会话存储不可用，未能启用。', testedAt: Date.now() });
+      const id = tencentId.trim();
+      const key = tencentKey.trim();
+      if (!id.startsWith('AKID') || key.length !== 32) {
+        setTcState({ ...IDLE, tested: false, message: 'SecretId 应以 AKID 开头共 36 位，SecretKey 为 32 位字母数字。', testedAt: Date.now() });
+        return;
+      }
+      setTcState((s) => ({ ...s, phase: 'saving', message: '正在加密保存到账户密钥库…' }));
+      const result = await saveStoredTencentKeys(id, key);
+      if (!result.ok) {
+        setTcState({ ...IDLE, tested: false, message: result.message || '保存失败，请稍后重试。', testedAt: Date.now() });
         return;
       }
       setTencentId('');
       setTencentKey('');
-      syncFromStore();
-      await runTest('tencent', keys, setTcState);
+      setTencentKeys(uid, null); // 迁移完成：清除旧版 sessionStorage 遗留
+      await refreshStored();
+      await runTest('tencent');
     } else {
-      const keys: SessionDeepSeekKeys = { apiKey: deepseekKey.trim() };
-      if (deepseekModel.trim()) keys.model = deepseekModel.trim();
-      if (!setDeepSeekKeys(uid, keys)) {
-        setDsState({ ...IDLE, tested: false, message: '会话存储不可用，未能启用。', testedAt: Date.now() });
+      const key = deepseekKey.trim();
+      if (!key.startsWith('sk-')) {
+        setDsState({ ...IDLE, tested: false, message: 'API Key 应以 sk- 开头（DeepSeek 开放平台「API Keys」页获取）。', testedAt: Date.now() });
+        return;
+      }
+      setDsState((s) => ({ ...s, phase: 'saving', message: '正在加密保存到账户密钥库…' }));
+      const result = await saveStoredDeepSeekKeys(key, deepseekModel.trim() || undefined);
+      if (!result.ok) {
+        setDsState({ ...IDLE, tested: false, message: result.message || '保存失败，请稍后重试。', testedAt: Date.now() });
         return;
       }
       setDeepseekKey('');
-      syncFromStore();
-      await runTest('deepseek', keys, setDsState);
+      setDeepSeekKeys(uid, null); // 迁移完成：清除旧版 sessionStorage 遗留
+      await refreshStored();
+      await runTest('deepseek');
     }
   };
 
-  const clearAll = () => {
+  // 清除服务器账户密钥库中本账户的全部密钥 + 旧版 sessionStorage 遗留
+  const clearAll = async () => {
+    const result = await clearStoredKeys('all');
     clearSessionKeys(uid);
     setTcState(IDLE);
     setDsState(IDLE);
-    syncFromStore();
+    await refreshStored();
+    if (!result.ok) {
+      setTcState({ ...IDLE, tested: false, message: result.message || '清除失败，请稍后重试。', testedAt: Date.now() });
+    }
   };
 
+  const tcEnabled = Boolean(storedStatus?.tencent.configured || legacyTencent);
+  const dsEnabled = Boolean(storedStatus?.deepseek.configured || legacyDeepSeek);
   const tcBusy = tcState.phase !== 'idle';
   const dsBusy = dsState.phase !== 'idle';
   const tcAvail = !tcEnabled ? 'unconfigured' : tcState.tested === null ? 'unverified' : tcState.tested ? 'ok' : 'fail';
   const dsAvail = !dsEnabled ? 'unconfigured' : dsState.tested === null ? 'unverified' : dsState.tested ? 'ok' : 'fail';
 
-  const tcSession = getTencentKeys(uid);
-  const dsSession = getDeepSeekKeys(uid);
-
   return (
-    <section className="admin-keys-panel" aria-label="会话密钥配置">
+    <section className="admin-keys-panel" aria-label="密钥配置">
       <div className="admin-keys-head">
         <KeyRound size={18} aria-hidden="true" />
-        <strong>密钥配置（仅本次浏览会话）</strong>
-        <button type="button" className="secondary-button admin-keys-refresh" onClick={() => { syncFromStore(); void fetchServerStatus(); }}>
+        <strong>密钥配置（服务器账户密钥库）</strong>
+        <button type="button" className="secondary-button admin-keys-refresh" onClick={() => { void refreshStored(); void fetchServerStatus(); }}>
           <RefreshCw size={13} aria-hidden="true" />
           刷新状态
         </button>
       </div>
 
       <p className="admin-keys-note">
-        密钥由你自己填入，<b>只保存在当前浏览器会话中，关闭网站自动清除</b>；服务器不保存。
-        「验证」发起一次最小真实调用——只有验证通过，发票识别 / AI 核验才会真实生效。
-        接口地址由后端代理自动配置，无需填写。
+        密钥由你自己填入，<b>加密保存在服务器账户密钥库（AES-256-GCM，按账户隔离），浏览器不保存</b>；
+        跨会话可用、可随时清除，页面只显示末 4 位掩码。「验证」发起一次最小真实调用——只有验证通过，
+        发票识别 / AI 核验才会真实生效。接口地址由后端代理自动配置，无需填写。
       </p>
 
       {/* 服务可用性总览 */}
@@ -222,7 +239,7 @@ export function SessionKeysPanel() {
           <button
             type="button"
             className="secondary-button aks-row-test"
-            onClick={() => void runTest('tencent', undefined, setTcState)}
+            onClick={() => void runTest('tencent')}
             disabled={tcBusy || (!tcEnabled && !serverStatus?.tencent)}
           >
             <Zap size={13} aria-hidden="true" />
@@ -240,7 +257,7 @@ export function SessionKeysPanel() {
           <button
             type="button"
             className="secondary-button aks-row-test"
-            onClick={() => void runTest('deepseek', undefined, setDsState)}
+            onClick={() => void runTest('deepseek')}
             disabled={dsBusy || (!dsEnabled && !serverStatus?.deepseek)}
           >
             <Zap size={13} aria-hidden="true" />
@@ -250,7 +267,7 @@ export function SessionKeysPanel() {
         {serverStatus && (serverStatus.tencent || serverStatus.deepseek) && (
           <div className="aks-server-fallback" role="note">
             服务器全局密钥兜底：腾讯云 {serverStatus.tencent ? '已配置' : '未配置'} · DeepSeek {serverStatus.deepseek ? '已配置' : '未配置'}
-            （未启用会话密钥时自动使用；由管理员在服务器 .env 配置）
+            （账户未存密钥时自动使用；由管理员在服务器 .env 配置）
           </div>
         )}
       </div>
@@ -268,9 +285,14 @@ export function SessionKeysPanel() {
             <span>接口地址（自动配置）：<code>经后端代理 → ocr.tencentcloudapi.com</code></span>
           </div>
 
-          {tcSession && (
+          {storedStatus?.tencent.configured && (
             <p className="aks-current">
-              本会话密钥：<code>{maskKey(tcSession.secretId, 6)}</code>
+              账户已存密钥：<code>{storedStatus.tencent.masked || '****'}</code>
+            </p>
+          )}
+          {!storedStatus?.tencent.configured && legacyTencent && (
+            <p className="aks-current" role="note">
+              检测到旧版浏览器会话密钥，已预填到下方表单——点击「保存并验证」将转存到服务器密钥库。
             </p>
           )}
 
@@ -293,15 +315,15 @@ export function SessionKeysPanel() {
             <li>
               <span className="aks-step-num">2</span>
               <div>
-                <strong>粘贴并启用</strong>
-                <small>仅存入当前浏览器会话（关闭网站自动清除），服务器不保存</small>
+                <strong>粘贴并保存</strong>
+                <small>加密存入服务器账户密钥库（按账户隔离，页面只显示末 4 位掩码）</small>
               </div>
             </li>
             <li>
               <span className="aks-step-num">3</span>
               <div>
                 <strong>自动真实验证</strong>
-                <small>启用后立即用最小图片真实调用一次，明确结论</small>
+                <small>保存后立即用最小图片真实调用一次，明确结论</small>
               </div>
             </li>
           </ol>
@@ -342,12 +364,12 @@ export function SessionKeysPanel() {
               onClick={() => void enableAndVerify('tencent')}
               disabled={tcBusy || !tencentId.trim() || !tencentKey.trim()}
             >
-              {tcState.phase === 'enabling' ? '启用中…' : tcState.phase === 'testing' ? '验证中…' : '启用并验证'}
+              {tcState.phase === 'saving' ? '保存中…' : tcState.phase === 'testing' ? '验证中…' : '保存并验证'}
             </button>
             <button
               type="button"
               className="secondary-button"
-              onClick={() => void runTest('tencent', undefined, setTcState)}
+              onClick={() => void runTest('tencent')}
               disabled={tcBusy || (!tcEnabled && !serverStatus?.tencent)}
             >
               <Zap size={13} aria-hidden="true" />
@@ -374,9 +396,15 @@ export function SessionKeysPanel() {
             <span>接口地址（自动配置）：<code>经后端代理 → api.deepseek.com</code></span>
           </div>
 
-          {dsSession && (
+          {storedStatus?.deepseek.configured && (
             <p className="aks-current">
-              本会话密钥：<code>{maskKey(dsSession.apiKey, 5)}</code> · 模型 <code>{dsSession.model || 'deepseek-v4-flash'}</code>
+              账户已存密钥：<code>{storedStatus.deepseek.masked || '****'}</code>
+              {storedStatus.deepseek.model ? <> · 模型 <code>{storedStatus.deepseek.model}</code></> : null}
+            </p>
+          )}
+          {!storedStatus?.deepseek.configured && legacyDeepSeek && (
+            <p className="aks-current" role="note">
+              检测到旧版浏览器会话密钥，已预填到下方表单——点击「保存并验证」将转存到服务器密钥库。
             </p>
           )}
 
@@ -396,15 +424,15 @@ export function SessionKeysPanel() {
             <li>
               <span className="aks-step-num">2</span>
               <div>
-                <strong>粘贴并启用</strong>
-                <small>仅存入当前浏览器会话（关闭网站自动清除），服务器不保存</small>
+                <strong>粘贴并保存</strong>
+                <small>加密存入服务器账户密钥库（按账户隔离，页面只显示末 4 位掩码）</small>
               </div>
             </li>
             <li>
               <span className="aks-step-num">3</span>
               <div>
                 <strong>自动真实验证</strong>
-                <small>启用后立即发起一次最小真实请求，区分密钥无效 / 欠费 / 限流 / 超时</small>
+                <small>保存后立即发起一次最小真实请求，区分密钥无效 / 欠费 / 限流 / 超时</small>
               </div>
             </li>
           </ol>
@@ -441,12 +469,12 @@ export function SessionKeysPanel() {
               onClick={() => void enableAndVerify('deepseek')}
               disabled={dsBusy || !deepseekKey.trim()}
             >
-              {dsState.phase === 'enabling' ? '启用中…' : dsState.phase === 'testing' ? '验证中…' : '启用并验证'}
+              {dsState.phase === 'saving' ? '保存中…' : dsState.phase === 'testing' ? '验证中…' : '保存并验证'}
             </button>
             <button
               type="button"
               className="secondary-button"
-              onClick={() => void runTest('deepseek', undefined, setDsState)}
+              onClick={() => void runTest('deepseek')}
               disabled={dsBusy || (!dsEnabled && !serverStatus?.deepseek)}
             >
               <Zap size={13} aria-hidden="true" />
@@ -465,15 +493,15 @@ export function SessionKeysPanel() {
       <div className="admin-keys-footnote" role="note">
         <ShieldCheck size={14} aria-hidden="true" />
         <span>
-          隐私保护：密钥仅存于当前标签页会话，关闭网站即清除，浏览器与服务器均不持久化；
-          需要彻底退出时也可点下方按钮立即清除。密钥疑似泄露时到对应控制台禁用并新建即可。
+          安全说明：密钥经 AES-256-GCM 加密存储于服务器账户密钥库，按账户隔离、永不回显明文；
+          浏览器不再持久化任何密钥。需要退出时点下方按钮立即清除；密钥疑似泄露时到对应控制台禁用并新建即可。
         </span>
       </div>
 
       <div className="aks-actions aks-actions--footer">
-        <button type="button" className="secondary-button" onClick={clearAll} disabled={!tcEnabled && !dsEnabled}>
+        <button type="button" className="secondary-button" onClick={() => void clearAll()} disabled={!tcEnabled && !dsEnabled}>
           <Eraser size={13} aria-hidden="true" />
-          立即清除本会话全部密钥
+          立即清除本账户全部已存密钥
         </button>
       </div>
 
