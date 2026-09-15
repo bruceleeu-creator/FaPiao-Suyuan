@@ -1,6 +1,6 @@
 # Agent 当前任务记忆（开发完成态）
 
-> 更新日期：2026-08-24 —— 账户系统上线 + 公网部署完成（腾讯云 49.232.160.7:8083），源码已推 GitHub。
+> 更新日期：2026-09-15 —— Gitea 备份仓库域名 HTTPS 化（3cc7xt.site:8443）、服务器配置 OCR 常驻兜底密钥（实测鉴权通过）、手机端入口页内容更新。此前：账户系统上线 + 公网部署完成（腾讯云 49.232.160.7:8083）。
 
 ## 0. 项目总览
 
@@ -118,15 +118,15 @@ npm run validate      # 一键全验证
 - 备份：每日 3 点 crontab 备份 `server/data` 到 `/www/backup`（留 7 份）。
 - 更新发布：本地 `npm run build` → `rsync -a dist/ root@49.232.160.7:/www/wwwroot/invoice-evidence-web/`；后端改动 `scp server/*.mjs` 后 `pm2 restart invoice-evidence-server`。
 - **CI/CD 自动部署（2026-08-24）**：`.github/workflows/deploy.yml`——推送 main 自动 npm ci → validate → rsync 前端/后端 → pm2 restart → 内外网健康检查；密钥在仓库 Secrets（DEPLOY_SSH_KEY/HOST/USER，专用部署密钥 ~/.ssh/fapiao_deploy）；concurrency 防并发；账户数据永不在部署范围。
-- **双远程仓库（2026-08-30）**：
+- **双远程仓库（2026-08-30 建，2026-09-15 域名化）**：
   - `origin` → `https://github.com/bruceleeu-creator/FaPiao-Suyuan.git`（主仓库，推送 main 触发 CI/CD 部署）
-  - `gitea` → `http://49.232.160.7:3000/BruceLEEU/Fapiao-Suyuan.git`（生产服务器上自建 Gitea，仅备份镜像，**推送不触发部署**）
+  - `gitea` → `https://3cc7xt.site:8443/BruceLEEU/Fapiao-Suyuan.git`（生产服务器上自建 Gitea，仅备份镜像，**推送不触发部署**；域名 + HTTPS 见 §4.9）
   - 常用命令：`git push origin main`（发布上线）/ `git push gitea main`（备份）/ `git pull gitea main`（GitHub 断网时拉取）
-  - 新机器补配：`git remote add gitea http://49.232.160.7:3000/BruceLEEU/Fapiao-Suyuan.git`
+  - 新机器补配：`git remote add gitea https://3cc7xt.site:8443/BruceLEEU/Fapiao-Suyuan.git`
 - **GitHub 连通性坑**：本机与服务器到 GitHub 均间歇断网（超时/连接重置，时好时坏）；Gitea 在自家服务器上始终可达，可作灾备拉取源。
 - **浅克隆坑（Gitea 推送）**：Gitea 拒绝浅仓库推送（`shallow update not allowed`）。本仓库根提交 `e3f871f`「初始导入」，完整历史共 7 提交；若本地是 `--depth` 克隆，推送前删 `.git/shallow`（需先 `git fsck` 确认本地已有全部历史）。
-- **Gitea 安全**：HTTP 明文（IP 直连无证书），推送凭据明文过网；待办：宝塔配域名 + HTTPS。
-- 上线密钥（可选）：服务器 `server/.env` 填 `TENCENT_CLOUD_SECRET_ID/KEY`、`DEEPSEEK_API_KEY` 后 `pm2 restart`，启用真实 OCR/DeepSeek（缺失自动模拟模式）；推荐改用管理员网页「接口配置」页保存（加密存储、优先级高于 .env、保存即生效）。
+- **Gitea 安全（2026-09-15 已加固）**：已配域名 + HTTPS——对外 `https://3cc7xt.site:8443`（nginx 反代 127.0.0.1:3000，证书 `/etc/nginx/ssl/3cc7xt.site/`，Gitea `ROOT_URL` 即 8443；443 未放行、8443 防火墙已开）。Gitea 进程只绑 127.0.0.1，旧 `49.232.160.7:3000` 外部已不可达。
+- 上线密钥：会话密钥制为主（见 §4.8）；服务器常驻兜底密钥已配置（2026-09-15，见 §4.9）——`/www/wwwroot/invoice-evidence/.env`（**注意：代码读取位置是 `server/` 上一级**，`deepseekConfig.mjs` 的 loadDotEnv 以 `server/..` 为根解析），600 权限 root 属主，仅在请求未携带会话密钥时生效。
 
 ### 4.7 发票导入修复与密钥测试（2026-08-30，提交 ea55321）
 
@@ -146,6 +146,18 @@ npm run validate      # 一键全验证
 - **AI 凭证**：DeepSeek 生成借贷分录，后端强制借贷平衡校验（±0.05，至少 2 条）才返回；失败/未配置前端自动回退本地规则版（mockBuildVoucherDraft）；DecisionResultPage 显示来源徽标（AI 生成·借贷平衡已校验 / 本地规则生成）。
 - **遗留注意**：请求级密钥经 HTTP 明文传输（生产无 HTTPS），敏感度与发票图片同级；上 HTTPS 后此顾虑消除。旧的 /api/admin/keys/* 保存接口仍在（冒烟测试用）但 UI 已不使用。**规则与提示词的权威来源：`docs/验真与凭证规则设计.md`（改规则必须先改文档）。**
 
+### 4.9 Gitea 域名化 + OCR 常驻兜底密钥（2026-09-15）
+
+- **Gitea 域名 + HTTPS**：`https://3cc7xt.site:8443/BruceLEEU/Fapiao-Suyuan.git`。nginx vhost `/www/server/panel/vhost/nginx/gitea.conf`（listen 443+8443 ssl，证书 `/etc/nginx/ssl/3cc7xt.site/`）反代 127.0.0.1:3000；`/etc/gitea/app.ini` 的 `ROOT_URL = https://3cc7xt.site:8443/`。外网只有 8443 可达（443 防火墙未放行），Gitea 原生进程只绑回环。本地 `git remote set-url gitea https://3cc7xt.site:8443/BruceLEEU/Fapiao-Suyuan.git`；凭据沿用旧 host 的 GCM 存储（host 变更需 `git credential approve` 迁移或推送时用带凭据 URL 一次）。
+- **OCR 常驻兜底密钥（用户 2026-09-15 提供，实测第一组可用密钥）**：
+  - 位置：`/www/wwwroot/invoice-evidence/.env`（`server/` 上一级；`TENCENT_CLOUD_SECRET_ID/KEY` + `TENCENT_CLOUD_REGION`），权限 600、root 属主、不在 Web 根目录（Web 根是独立的 `/www/wwwroot/invoice-evidence-web`）、不入任何仓库。
+  - 生效链路：`deepseekConfig.mjs loadDotEnv()` 启动注入 → `getEffectiveTencentCredentials()` 兜底（优先级：请求会话密钥 > 加密存储 > .env）；`pm2 restart invoice-evidence-server --update-env` 后 `/health` 即报 `ocrConfigured:true`（只返回布尔，永不回显值）。
+  - 真实验证法：注册临时账号 → `POST /api/keys/test/tencent` 空 body（测服务器常驻密钥，1×1 PNG 最小真实调用）→ 鉴权通过即有效（返回 `FailedOperation.OcrFailed` 属预期，因为测试图不是发票）；**区别于旧三组密钥的 SignatureFailure**。验证后临时账号已删。
+  - 密钥值不写入任何仓库文件/文档/日志（本文档只记位置与验证方法）。
+- **手机端入口页更新**：`MobileEntryPage.tsx` 内容刷新——响应式可看范围（工作台/列表/异常/驾驶舱）、核心操作回电脑端、手机端规划三件事（拍照传票/补传证据/审批提醒）、密钥会话制说明；复用既有样式类未改 CSS。
+- **users.json 事故与恢复（教训，勿重犯）**：清理诊断账号时用 `JSON.stringify(obj, Object.keys(db))` 当"格式化"——replacer 数组是**每层白名单**，把 users 数组内每个用户对象的字段全部过滤成 `{}`（username/salt/hash 全丢）。幸有每日 3 点 crontab 备份（`/www/backup/invoice-evidence-data-YYYY-MM-DD.tar.gz` 留 7 份），从当日备份恢复后用正确方式（parse → filter → `JSON.stringify(db)` 无 replacer → 临时文件 + rename 原子替换）重做清理。**规则：改 JSON 存储一律 parse/filter/stringify(无 replacer)，写前断言关键字段非空，否则中止。**
+- 账户清理结果：`diag_test_0830`（2026-08-30 诊断遗留）与 `deploy_check_0915`（本次验证临时号）均已删除；现存 3 户：1234(admin)、bruce、rule_check_0831。
+
 ## 5. 涉及文件索引
 
 - **流程页**：`src/ui/pages/InvoiceWorkflowPage.tsx`（证据补充任务卡片 + 详情弹层 + 风险报告）、`src/ui/pages/InvoiceIntakePage.tsx`（OCR 状态条 + 模拟降级）、`src/ui/pages/DecisionResultPage.tsx`
@@ -164,9 +176,9 @@ npm run validate      # 一键全验证
 - **8083 防火墙**：需用户在腾讯云控制台放行（TCP/8083/0.0.0.0/0），放行前外网不可达（服务器本机已验证全通）。
 - **HTTP 明文**：IP 直连无 HTTPS（无域名办不了证书）；上域名需改 nginx 三处 + 证书，架构已预留。
 - **服务器 SSH 加固待确认**：ssh 开密码登录 + root 直登，auth 日志已有 14.8 万次爆破尝试；已向用户提议禁用密码登录（保留密钥登录），等用户确认后执行。docker 端口（8478/4440/5000/13306/5212 等）对外监听，需用户到腾讯云防火墙核对放行范围。
-- **生产密钥模型已改会话制（2026-08-31）**：用户密钥仅存浏览器 sessionStorage（关站自清），服务器零持久化（旧加密存储文件已删）。此前的"等 CAM 新建配对密钥"事项已随模型变更关闭——用户在「接口配置」页填自己的密钥并「启用并验证」即可；曾提供的 3 个 SecretId 与 SecretKey 组合均验证签名不匹配（官方 SDK 交叉确认），作废。
+- **生产密钥模型已改会话制（2026-08-31）**：用户密钥仅存浏览器 sessionStorage（关站自清），服务器零持久化（旧加密存储文件已删）。**2026-09-15 起增加服务器 OCR 常驻兜底密钥（.env，600 权限，仅无会话密钥时生效，实测鉴权通过）**，用户无密钥时 OCR 也可真实识别；曾提供的旧 3 组 SecretId/SecretKey 均签名不匹配作废，现行兜底密钥为 2026-09-15 新配组（值不入库，见 §4.9）。
 - **验真/凭证已 AI 化（2026-08-31）**：不再是模拟/预留——验真 = 确定性规则 + DeepSeek 一致性核验（见 4.8 与 docs/验真与凭证规则设计.md），凭证 = AI 分录草稿 + 本地规则回退。查重仍为本地逻辑（产品边界内）。
-- **诊断账户待清理**：生产 users.json 存有 diag_test_0830（2026-08-30 诊断注册，role=user）；系统暂无删户接口，可 SSH 手动清理。
+- **诊断账户已清理（2026-09-15）**：diag_test_0830 与验证临时号 deploy_check_0915 均已从 users.json 删除（含一次误写坏的恢复事故，见 §4.9 教训）；现存 3 户：1234(admin)、bruce、rule_check_0831。
 - 验真、查重、凭证接口状态见上方 2026-08-31 两条；验真/凭证为 AI + 规则实现，查重为本地逻辑。
 - 业务数据在用户浏览器（按账户命名空间），服务器只存账户库；跨设备同步属后续升级。
 - 工作流操作日志第一条仍叫「开始识别」（内部标签，测试锁定）；改名需同步 `workflowReducer` + 2 个测试文件。

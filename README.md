@@ -210,7 +210,7 @@ zip -r 发票溯源证据链系统.zip . \
 | 远程名 | 地址 | 用途 |
 |---|---|---|
 | `origin` | `https://github.com/bruceleeu-creator/FaPiao-Suyuan.git` | 主仓库；**推送 main 即触发 CI/CD 自动部署**（约 3 分钟） |
-| `gitea` | `http://49.232.160.7:3000/BruceLEEU/Fapiao-Suyuan.git` | 自建 Gitea 备份镜像（跑在生产服务器上）；**仅备份，推送不触发部署** |
+| `gitea` | `https://3cc7xt.site:8443/BruceLEEU/Fapiao-Suyuan.git` | 自建 Gitea 备份镜像（跑在生产服务器上，已配域名 + HTTPS）；**仅备份，推送不触发部署** |
 
 日常操作：
 
@@ -223,14 +223,14 @@ git pull gitea main    # GitHub 连不上时，从自建仓库拉取最新代码
 在新电脑上补配自建远程：
 
 ```bash
-git remote add gitea http://49.232.160.7:3000/BruceLEEU/Fapiao-Suyuan.git
+git remote add gitea https://3cc7xt.site:8443/BruceLEEU/Fapiao-Suyuan.git
 ```
 
 注意事项：
 
+- **Gitea 已配域名 + HTTPS（2026-09-15 起）**：对外地址 `https://3cc7xt.site:8443`（nginx 反代本机 3000，证书在 `/etc/nginx/ssl/3cc7xt.site/`，Gitea `ROOT_URL` 即 8443 端口）。旧的 `http://49.232.160.7:3000` 已只绑定 127.0.0.1，外部不可用，各机器 remote 需按上表更新。
 - **GitHub 从本地/服务器偶尔直连不稳**（超时、连接重置，时好时坏）。自建 Gitea 在自己服务器上，始终可达，可当灾备拉取源。
 - **Gitea 拒绝浅克隆推送**（报 `shallow update not allowed`）。本仓库根提交为 `e3f871f`「初始导入」，完整历史共 7 个提交；若克隆时带了 `--depth` 参数，推送前删除 `.git/shallow` 文件即可（本地已有全部历史时才安全，可用 `git fsck` 确认完整性）。
-- Gitea 目前走 HTTP 明文（IP 直连无证书），推送凭据明文过网；后续可在宝塔为其配置域名 + HTTPS 加固。
 - CI/CD 细节见 `.github/workflows/deploy.yml`；也可在仓库 Actions 页手动触发（Run workflow）。部署密钥存仓库 Secrets，账户数据 `server/data` 永不被部署覆盖。
 
 ## 10. 公网部署（腾讯云 49.232.160.7）
@@ -241,7 +241,7 @@ git remote add gitea http://49.232.160.7:3000/BruceLEEU/Fapiao-Suyuan.git
 - 服务器路径：后端 `/www/wwwroot/invoice-evidence/server`（入口 `start.mjs`），前端 `/www/wwwroot/invoice-evidence-web`，nginx vhost `/www/server/panel/vhost/nginx/invoice-evidence-web.conf`
 - 账户数据：`server/data/users.json`，每日 3 点自动备份至 `/www/backup`（保留 7 份）；业务数据在各用户浏览器 localStorage（按账户命名空间隔离，不上传服务器）
 - 更新发布：见第 9 节「代码仓库与发布方式」——推 GitHub main 自动 CI/CD 部署，推自建 Gitea 仅备份
-- 上线密钥（**会话密钥制，2026-08-31 起**）：每个用户登录后在「接口配置」页填入自己的密钥——仅存于浏览器 sessionStorage（关闭网站自动清除，可随时手动清除），**服务器不保存任何用户密钥**；「启用并验证」自动发起一次最小真实调用确认密钥可用（区分 401 无效 / 402 欠费 / AuthFailure 被拒 / 超时）。接口地址由后端代理固定（ocr.tencentcloudapi.com / api.deepseek.com），无需填写。验真与凭证草稿由 DeepSeek 实现（AI 辅助核验 + AI 分录生成，均标注非官方结果并有本地规则回退），无需任何额外配置。备选：管理员可在服务器 `server/.env` 配置全局兜底密钥（仅在请求未携带会话密钥时生效）。
+- 上线密钥（**会话密钥制，2026-08-31 起**）：每个用户登录后在「接口配置」页填入自己的密钥——仅存于浏览器 sessionStorage（关闭网站自动清除，可随时手动清除），**服务器不保存任何用户密钥**；「启用并验证」自动发起一次最小真实调用确认密钥可用（区分 401 无效 / 402 欠费 / AuthFailure 被拒 / 超时）。接口地址由后端代理固定（ocr.tencentcloudapi.com / api.deepseek.com），无需填写。验真与凭证草稿由 DeepSeek 实现（AI 辅助核验 + AI 分录生成，均标注非官方结果并有本地规则回退），无需任何额外配置。**OCR 常驻兜底密钥（2026-09-15 起）**：服务器 `/www/wwwroot/invoice-evidence/.env`（`server/` 上一级，代码按此路径读取）配置了腾讯云 SecretId/SecretKey 兜底——仅在请求未携带会话密钥时生效；文件权限 600、root 属主、不在 Web 根目录下、不入仓库，任何接口只返回「已配置」布尔值，永不回显密钥。
 - 故障排查：上传发票"没反应/卡住"时优先到「接口配置」页看服务总览——任一服务"未配置/验证失败"，识别与 AI 能力就不会真实生效；填入密钥并验证通过即可恢复。
 
 ## 11. 产品边界与一期范围
@@ -286,3 +286,4 @@ git remote add gitea http://49.232.160.7:3000/BruceLEEU/Fapiao-Suyuan.git
 | 2026-08-24 | 公网上线 `http://49.232.160.7:8083/` + CI/CD 自动部署（推送 GitHub main 即发布） |
 | 2026-08-30 | 修复发票导入"无反应/卡住"（OCR 密钥错误被误判为成功的核心 Bug + 20s 超时保护）；管理页新增密钥「测试连接」；双远程仓库（GitHub 主 + 自建 Gitea 备份，见第 9 节） |
 | 2026-08-31 | 密钥改会话制（仅存浏览器、关站自清、服务器零持久化）；验真/凭证改 DeepSeek 实现（AI 辅助核验 + AI 分录草稿，均带本地回退）；规则加固：官方出处的确定性规则 + JSON mode 提示词 + 三道质量闸（见 `docs/验真与凭证规则设计.md`）；设置页重构（四档真实可用性状态）；文档规整（根目录只留 4 个活文档） |
+| 2026-09-15 | Gitea 备份仓库配域名 + HTTPS（`https://3cc7xt.site:8443`，旧 IP:3000 仅留本机回环），remote 与文档同步更新；手机端入口页内容更新（响应式可看范围 + 规划三件事 + 密钥说明）；服务器配置 OCR 常驻兜底密钥（`.env` 600 权限，仅无会话密钥时生效，已实测可用） |
